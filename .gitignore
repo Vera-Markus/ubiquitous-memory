@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+
+# Everything the app writes at run time: logins, assets, library, logs, database
+data/

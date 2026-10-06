@@ -1,0 +1,5 @@
+# Development and checkpoint tooling
+-r requirements.txt
+pytest==9.1.1
+pyflakes==4.0.2
+pyinstaller==6.22.3
