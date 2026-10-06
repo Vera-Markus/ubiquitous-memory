@@ -20,6 +20,7 @@ from app.gui.dialogs.structure_name_dialog import StructureNameDialog
 from app.loaders.fitting_loader import EVEdbLoader
 from app.loaders.fitting_manager import fittingManager
 from app.esi_service.auth_service import AuthService
+from app.esi_service.esi_settings import ESI_BASE_URL
 from app.esi_service.real_esi_client import RealESIClient
 from app.esi_service.oauth_config import CLIENT_ID, REDIRECT_URI, SCOPES
 from app.services.export_resolved_locations import save_manual_location, skip_location_prompt, structures_to_name
@@ -51,7 +52,7 @@ class EVEFleetGUI:
         self.root.geometry("1400x900")
         self.root.minsize(1400, 900)
         self.root.maxsize(1400, 900)
-        ui_style.apply(self.root)       # the native ttk theme and the shared styles (UI rework step 8.1)
+        ui_style.apply(self.root, ui_style.load_theme(CONFIG_DIR))     # the saved colour theme (Options ▸ Appearance)
 
         self._db_job_running = False    # a database check or download is in progress
 
@@ -69,7 +70,7 @@ class EVEFleetGUI:
         # Constants
         self.CLIENT_ID = CLIENT_ID
         self.REDIRECT_URI = REDIRECT_URI
-        self.ESI_BASE_URL = "https://esi.evetech.net/latest/"
+        self.ESI_BASE_URL = ESI_BASE_URL
 
         # Initialize Managers & Services
         self.fitting_manager = fittingManager(str(GENERATED_DIR / "fittings.json"))
@@ -462,9 +463,28 @@ class EVEFleetGUI:
         )
         self.btn_pull_all.pack(pady=5, padx=5, fill=tk.X)
 
+        # Appearance panel: the colour theme, applied straight away and remembered
+        appearance_panel = ttk.LabelFrame(right_side_frame, text="Appearance", padding=(5, 5))
+        appearance_panel.pack(fill=tk.X, pady=2, padx=5)
+        ttk.Label(appearance_panel, text="Theme:").pack(side=tk.LEFT, padx=5)
+        self.theme_combo = ttk.Combobox(appearance_panel, values=list(ui_style.THEMES), state="readonly", width=16)
+        self.theme_combo.set(ui_style.current_theme)
+        self.theme_combo.pack(side=tk.LEFT, padx=5, pady=5)
+        self.theme_combo.bind("<<ComboboxSelected>>", self._handle_theme_selected)
+
         # 3. Initialize Character Loading
         self._initialize_connected_characters()
         self._start_cooldown_timer()
+
+    def _handle_theme_selected(self, event=None):
+        """Options ▸ Appearance: redraws every open window in the chosen theme and saves it."""
+        theme = self.theme_combo.get()
+        self.theme_combo.selection_clear()
+        if theme == ui_style.current_theme:
+            return
+        ui_style.apply(self.root, theme)
+        ui_style.save_theme(CONFIG_DIR, theme)
+        self._log(f"[INFO] Theme: {theme}")
 
     def _set_add_character_enabled(self, enabled: bool):
         """Characters ▸ Add Character is greyed out while a login is running."""

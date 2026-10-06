@@ -4,8 +4,10 @@ for the log panel, defect F10). It shows the lines the app has kept so far and
 adds new ones while it's open. Only one viewer is open at a time.
 """
 import tkinter as tk
-from tkinter import scrolledtext, ttk
+from tkinter import ttk
 from typing import Iterable
+
+from app.gui import style as ui_style
 
 
 class LogViewer:
@@ -20,7 +22,7 @@ class LogViewer:
         body = ttk.Frame(self.window, padding=(10, 10))
         body.pack(fill=tk.BOTH, expand=True)
 
-        self.text = scrolledtext.ScrolledText(body, state='disabled', font=("Consolas", 9), wrap=tk.NONE)
+        self.text = ui_style.ScrolledText(body, state='disabled', font=("Consolas", 9), wrap=tk.NONE)
         self.text.pack(fill=tk.BOTH, expand=True)
 
         buttons = ttk.Frame(body)

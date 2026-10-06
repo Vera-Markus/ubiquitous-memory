@@ -18,6 +18,7 @@ class ESIRequest:
     method: str = "GET"
     headers: Dict[str, str] = None
     params: Dict[str, Any] = None
+    json: Any = None                    # request body (POST), sent as JSON
 
 class IESIClient(ABC):
     @abstractmethod

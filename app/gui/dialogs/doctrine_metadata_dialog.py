@@ -15,8 +15,6 @@ from app.gui import style as ui_style
 from app.services.doctrine_metadata_form import (capacity_text, escape_label, escape_options, filter_options,
                                                  build_metadata, fuel_suggestions, metadata_bays, requirements_text)
 
-ERROR_COLOUR = "#b00020"
-WARNING_COLOUR = "#8a5a00"
 
 
 class EscapeCombo:
@@ -124,11 +122,11 @@ class DoctrineMetadataDialog:
                                 self.escape.options if self.escape else [],
                                 self.notes.get(), self.app.evedb_loader, existing_escape)
         if result.errors:
-            self._show(["Fix these before saving:"] + [f"• {e}" for e in result.errors], ERROR_COLOUR)
+            self._show(["Fix these before saving:"] + [f"• {e}" for e in result.errors], ui_style.ERROR)
             return
         if result.warnings and result.warnings != self._acknowledged_warnings:
             self._acknowledged_warnings = result.warnings
-            self._show([f"⚠ {w}" for w in result.warnings] + ["Press Save again to save anyway."], WARNING_COLOUR)
+            self._show([f"⚠ {w}" for w in result.warnings] + ["Press Save again to save anyway."], ui_style.WARN)
             self.btn_save.config(text="Save anyway")
             return
         self._store(result.metadata)
@@ -138,7 +136,7 @@ class DoctrineMetadataDialog:
             self._confirm_clear = True
             self.btn_clear.config(text="Confirm clear")
             self._show(["This removes every requirement and the notes from this fitting. "
-                        "Press Confirm clear to go ahead."], WARNING_COLOUR)
+                        "Press Confirm clear to go ahead."], ui_style.WARN)
             return
         self._store(DoctrineMetadata())
 
@@ -146,7 +144,7 @@ class DoctrineMetadataDialog:
         try:
             saved = self.app.fitting_manager.set_metadata(self.fit_uid, metadata)
         except MetadataError as error:
-            self._show(["Couldn't save:"] + [f"• {p}" for p in error.problems], ERROR_COLOUR)
+            self._show(["Couldn't save:"] + [f"• {p}" for p in error.problems], ui_style.ERROR)
             return
         count = sum(len(r) for r in saved.bays.values())
         self.app._log(f"[SUCCESS] Saved doctrine requirements for {self.fitting['fit_name']}: {count} requirement(s).")

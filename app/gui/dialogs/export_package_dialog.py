@@ -14,7 +14,6 @@ from app.services.doctrine_export_service import (LOOSE_FITS, DoctrineExportServ
                                                  TreeNode)
 from app.gui import style as ui_style
 
-ERROR_COLOUR = "#b00020"
 TICKED, UNTICKED = "☑", "☐"
 
 
@@ -59,7 +58,7 @@ class ExportPackageDialog:
                   foreground=ui_style.MUTED).pack(side=tk.LEFT, padx=5)
         self.summary = ttk.Label(body, text="", anchor=tk.W)
         self.summary.pack(fill=tk.X)
-        self.problems = ttk.Label(body, text="", foreground=ERROR_COLOUR, justify=tk.LEFT, anchor=tk.W, wraplength=640)
+        self.problems = ttk.Label(body, text="", foreground=ui_style.ERROR, justify=tk.LEFT, anchor=tk.W, wraplength=640)
         self.problems.pack(fill=tk.X)
 
         buttons = ttk.Frame(body)

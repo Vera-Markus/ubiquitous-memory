@@ -1,7 +1,7 @@
 import threading
 import tkinter as tk
 import tkinter.simpledialog as simpledialog
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import messagebox, ttk
 
 from app.gui.dialogs.doctrine_metadata_dialog import DoctrineMetadataDialog
 from app.gui.dialogs.escape_ship_chooser import EscapeShipChooser
@@ -143,7 +143,7 @@ class FittingsTab:
             "new": (self.btn_import, self.btn_cancel_edit, self.shared_doctrine_check),
         }
 
-        self.fit_text_area = scrolledtext.ScrolledText(right_frame, state='disabled')
+        self.fit_text_area = ui_style.ScrolledText(right_frame, state='disabled')
         self.fit_text_area.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
 
         self._set_mode("view")

@@ -97,7 +97,10 @@ async def resolve_unknowns(esi_client: RealESIClient, cache_path: Optional[Path]
         f"with up to {len(orders[pending[0]])} character(s) each...")
 
     resolved: Set[int] = set()
+    paused = False
     for round_index in range(max(len(order) for order in orders.values())):
+        if paused:
+            break
         # This round, every unresolved structure tries its next character. One character
         # at a time, because the client sends the active character's token.
         by_character: Dict[Optional[str], List[int]] = {}
@@ -105,10 +108,19 @@ async def resolve_unknowns(esi_client: RealESIClient, cache_path: Optional[Path]
             if sid not in resolved and round_index < len(orders[sid]):
                 by_character.setdefault(orders[sid][round_index], []).append(sid)
         for character_id in sorted(by_character, key=lambda c: int(c) if c else 0):
+            if paused:
+                break
             if character_id is not None and use_character is not None:
                 await use_character(character_id)
             batch_ids = by_character[character_id]
             for i in range(0, len(batch_ids), BATCH_SIZE):
+                # Structures a character can't see answer 403, and each counts against ESI's
+                # error limit: stop when the client pauses for it (RC2 §1, G7).
+                if getattr(esi_client, "paused_for", lambda: 0)() > 0:
+                    log("[ESI Resolver] Stopping: ESI's error limit is nearly used up. "
+                        "The rest will be looked up on the next pull.")
+                    paused = True
+                    break
                 batch = batch_ids[i:i + BATCH_SIZE]
                 results = await asyncio.gather(*(fetch_structure_info(esi_client, sid) for sid in batch))
                 for sid, (data, status_code, _body) in zip(batch, results):

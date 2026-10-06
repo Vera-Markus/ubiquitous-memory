@@ -4,6 +4,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
+from app.esi_service.base_interfaces import ESIRequest
+
 logger = logging.getLogger("EnrichAssets")
 
 async def enrich_assets_with_custom_names(
@@ -70,23 +72,19 @@ async def enrich_assets_with_custom_names(
         for i in range(0, len(unique_ids), 1000):
             batch = unique_ids[i:i+1000]
             url = f"/characters/{char_id}/assets/names"
-            headers = {"Authorization": f"Bearer {auth_service.get_access_token()}", "Content-Type": "application/json"}
-            
+
             try:
                 logger.info(f"  - Fetching names for {char_id} (batch {i//1000 + 1})")
-                response = await esi_client.client.post(
-                    f"{esi_client.base_url}{url}",
-                    json=batch,
-                    headers=headers
-                )
-                
+                # Through the client, so it gets the token refresh and ESI's limits (RC2 §1, G6).
+                response = await esi_client.request(ESIRequest(url=url, method="POST", json=batch))
+
                 if response.status_code == 200:
-                    names_data = response.json()
+                    names_data = response.data
                     for entry in names_data:
                         # entry is {'item_id': ..., 'name': ...}
                         name_lookup[(char_id, entry['item_id'])] = entry['name']
                 else:
-                    logger.error(f"  - ESI Error for {char_id}: {response.status_code} - {response.text}")
+                    logger.error(f"  - ESI Error for {char_id}: {response.status_code} - {response.data}")
                     
             except Exception as e:
                 logger.error(f"  - Request exception for {char_id}: {e}")

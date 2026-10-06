@@ -168,6 +168,7 @@ class ResetService:
                 self.raw_dir,
                 self.generated_dir,
                 self.config_dir / "pull_state.json",
+                self.config_dir / "esi_cache.json",
                 self.config_dir / "export_profiles.json",
             ]
 

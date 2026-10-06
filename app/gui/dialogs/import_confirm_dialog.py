@@ -4,12 +4,12 @@ update and remove, anything that blocks it, and the assignment choice.
 Nothing is written until Import is pressed.
 """
 import tkinter as tk
-from tkinter import scrolledtext, ttk
+from tkinter import ttk
 from typing import Callable, List
 
 from app.services.doctrine_import_service import LABELS, NAME_KEYS, SECTIONS, UID_KEYS, ImportPlan
+from app.gui import style as ui_style
 
-ERROR_COLOUR = "#b00020"
 
 
 def plan_lines(plan: ImportPlan) -> List[str]:
@@ -57,9 +57,9 @@ class ImportConfirmDialog:
         body.pack(fill=tk.BOTH, expand=True)
 
         self.summary = ttk.Label(body, text=plan.summary(), justify=tk.LEFT, anchor=tk.W, wraplength=640,
-                                foreground=ERROR_COLOUR if plan.conflicts else "black")
+                                foreground=ui_style.ERROR if plan.conflicts else ui_style.TEXT)
         self.summary.pack(fill=tk.X)
-        self.details = scrolledtext.ScrolledText(body, height=14, width=80)
+        self.details = ui_style.ScrolledText(body, height=14, width=80)
         self.details.insert("1.0", "\n".join(plan_lines(plan)) or "Nothing changes.")
         self.details.configure(state="disabled")
         self.details.pack(fill=tk.BOTH, expand=True, pady=5)

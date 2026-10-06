@@ -9,6 +9,7 @@ from tkinter import ttk
 from typing import Callable, Dict, Tuple
 
 from app.services.doctrine_import_service import ImportPlan
+from app.gui import style as ui_style
 
 RETIRED = "Retired by the fitting manager"
 
@@ -50,7 +51,7 @@ class RemovedRequirementsDialog:
             var = tk.BooleanVar(value=added)
             self.choices[row.key] = var
             if row.retired:
-                ttk.Label(rows, text=RETIRED, foreground="#8a5a00").grid(row=index, column=1, sticky=tk.W, padx=(0, 10))
+                ttk.Label(rows, text=RETIRED, foreground=ui_style.WARN).grid(row=index, column=1, sticky=tk.W, padx=(0, 10))
                 ttk.Checkbutton(rows, text="Move to personal", variable=var).grid(row=index, column=2, sticky=tk.W)
             else:
                 ttk.Checkbutton(rows, text="Keep", variable=var).grid(row=index, column=2, sticky=tk.W)

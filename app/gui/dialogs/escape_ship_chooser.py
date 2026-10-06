@@ -6,10 +6,11 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional
 
-from app.gui.dialogs.doctrine_metadata_dialog import ERROR_COLOUR, EscapeCombo
+from app.gui.dialogs.doctrine_metadata_dialog import EscapeCombo
 from app.models.bay_registry import ESCAPE_BAY
 from app.models.doctrine_metadata import DoctrineMetadata, MetadataError
 from app.services.doctrine_metadata_form import NO_ESCAPE_SHIP
+from app.gui import style as ui_style
 
 
 class EscapeShipChooser:
@@ -27,7 +28,7 @@ class EscapeShipChooser:
         # Nothing is preselected: the recommendation should be a deliberate choice (§7.2).
         self.escape = EscapeCombo(body, fitting, app)
         self.escape.combo.pack(anchor=tk.W, pady=5, fill=tk.X)
-        self.message = ttk.Label(body, text="", foreground=ERROR_COLOUR, justify=tk.LEFT, anchor=tk.W)
+        self.message = ttk.Label(body, text="", foreground=ui_style.ERROR, justify=tk.LEFT, anchor=tk.W)
         self.message.pack(fill=tk.X)
         buttons = ttk.Frame(body)
         buttons.pack(anchor=tk.E, pady=(10, 0))

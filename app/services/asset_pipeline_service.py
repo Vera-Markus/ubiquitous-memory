@@ -5,10 +5,9 @@ from app.asset_handling.multi_char_asset_pull import run_multi_char_pull
 from app.asset_handling.aggregate_assets import aggregate_assets
 from app.esi_service.auth_service import AuthService
 from app.esi_service.oauth_config import CLIENT_ID, REDIRECT_URI
+from app.esi_service.esi_settings import ESI_BASE_URL
 from app.esi_service.real_esi_client import RealESIClient
 from app.services.export_resolved_locations import update_location_cache
-
-ESI_BASE_URL = "https://esi.evetech.net/latest"
 
 class AssetPipelineService:
     """
