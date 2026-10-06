@@ -9,6 +9,7 @@ from typing import Callable, List
 
 from app.services.doctrine_import_service import LABELS, NAME_KEYS, SECTIONS, UID_KEYS, ImportPlan
 from app.gui import style as ui_style
+from app.gui.window_placement import place_window
 
 
 
@@ -86,6 +87,7 @@ class ImportConfirmDialog:
             self.window.grab_set()
         except tk.TclError:
             pass
+        place_window(self.window)        # centred on the app, not top left
 
     def confirm(self):
         if self.plan.conflicts:

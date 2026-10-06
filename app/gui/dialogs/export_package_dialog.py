@@ -13,6 +13,7 @@ from app.loaders.package_registry import slugify
 from app.services.doctrine_export_service import (LOOSE_FITS, DoctrineExportService, ExportProfiles, ExportSelection,
                                                  TreeNode)
 from app.gui import style as ui_style
+from app.gui.window_placement import place_window
 
 TICKED, UNTICKED = "☑", "☐"
 
@@ -73,6 +74,7 @@ class ExportPackageDialog:
             self.window.grab_set()
         except tk.TclError:
             pass
+        place_window(self.window)        # centred on the app, not top left
 
     # --- tree ----------------------------------------------------------------------------
 

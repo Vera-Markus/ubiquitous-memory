@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 from app import paths
 from app.gui import style as ui_style
+from app.gui.window_placement import place_window
 
 GUIDE_FILE = "user_guide.md"
 INLINE = re.compile(r"\*\*(.+?)\*\*|`(.+?)`|\[([^\]]+)\]\(#([^)]+)\)")
@@ -145,6 +146,7 @@ class UserGuideWindow:
         self.window.bind("<Escape>", lambda e: self.window.destroy())
         self.contents_items: Dict[str, str] = {}        # contents row -> anchor
         self._render()
+        place_window(self.window)        # centred on the app, not top left
 
     # --- drawing ---------------------------------------------------------------------------
 

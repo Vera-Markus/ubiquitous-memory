@@ -12,6 +12,7 @@ from app.gui import style as ui_style
 from app.models.doctrine_metadata import BayRequirement
 from app.services.doctrine_metadata_form import (CarriedOption, carried_label, carried_options, carried_requirement,
                                                  carried_warnings)
+from app.gui.window_placement import place_window
 
 
 class CarriedEditor:
@@ -103,6 +104,7 @@ class CarriedChooser:
         buttons.grid(row=4, column=0, columnspan=2, sticky=tk.E, pady=(8, 0))
         ttk.Button(buttons, text="Cancel", command=self.close).pack(side=tk.LEFT, padx=5)
         ttk.Button(buttons, text="Add", command=self.confirm).pack(side=tk.LEFT)
+        place_window(self.window)        # centred on the app, not top left
 
     def _on_type(self, event):
         if event.keysym in ("Up", "Down", "Return", "Escape", "Tab"):

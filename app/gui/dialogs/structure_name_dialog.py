@@ -12,6 +12,7 @@ from tkinter import ttk
 from typing import Dict, List, Optional, Tuple
 
 from app.gui import style as ui_style
+from app.gui.window_placement import place_window
 
 MAX_SUGGESTIONS = 50
 
@@ -57,6 +58,7 @@ class StructureNameDialog:
         ttk.Button(buttons, text="Save", width=10, command=self._save).pack(side=tk.RIGHT, padx=5)
         self.name_entry.bind("<Return>", lambda e: self._save())
         self.system_combo.focus_set()
+        place_window(self.window)        # centred on the app, not top left
 
     def _suggest(self, event=None) -> None:
         """Lists the systems whose names contain what's typed (those starting with it first)."""

@@ -57,6 +57,7 @@ Your saved fittings, grouped by ship class and hull.
 
 - **New Fitting**: paste EFT text from the game. Tick **Shared Doctrine Fitting** for a fitting that's part of a doctrine you'll share ([shared and local](#shared-and-local)).
 - **Edit**, then **Save**: change a fitting's EFT text. Unknown items are listed.
+- If a fit you import or save is identical to one already saved (same hull, modules, drones, fighters and cargo, whatever its name), the tool says which and asks before saving another copy.
 - **Edit Doctrine Requirements**: what a capital or other ship carries beyond its EFT text ([capitals](#set-up-a-capital)).
 - Right-click a fitting to **Rename…**, **Delete…** or **Copy-Multibuy** (a whole ship's worth, for the game's Multibuy).
 

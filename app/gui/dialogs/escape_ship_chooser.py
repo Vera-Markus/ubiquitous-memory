@@ -11,6 +11,7 @@ from app.models.bay_registry import ESCAPE_BAY
 from app.models.doctrine_metadata import DoctrineMetadata, MetadataError
 from app.services.doctrine_metadata_form import NO_ESCAPE_SHIP
 from app.gui import style as ui_style
+from app.gui.window_placement import place_window
 
 
 class EscapeShipChooser:
@@ -38,6 +39,7 @@ class EscapeShipChooser:
             self.window.grab_set()
         except tk.TclError:
             pass
+        place_window(self.window)        # centred on the app, not top left
 
     def save(self):
         choice = self.escape.get().strip()

@@ -17,6 +17,7 @@ from app.gui.dialogs.fuel_editor import FuelEditor
 from app.services.doctrine_metadata_form import (capacity_text, escape_label, escape_options, filter_options,
                                                  build_metadata, fuel_rows, fuel_suggestions, hull_type_id_of,
                                                  metadata_bays, requirements_text, tube_problems, tube_rows)
+from app.gui.window_placement import place_window
 
 
 
@@ -64,6 +65,7 @@ class DoctrineMetadataDialog:
             self.window.grab_set()
         except tk.TclError:
             pass    # not viewable yet; the dialog still works, just not modal
+        place_window(self.window)        # centred on the app, not top left
 
     # --- layout --------------------------------------------------------------------------
 

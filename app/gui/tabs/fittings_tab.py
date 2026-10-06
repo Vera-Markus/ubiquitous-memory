@@ -1,10 +1,12 @@
 import threading
 import tkinter as tk
-import tkinter.simpledialog as simpledialog
-from tkinter import messagebox, ttk
+from app.gui import themed_dialogs as simpledialog
+from tkinter import ttk
+from app.gui import themed_dialogs as messagebox
 
 from app.gui.dialogs.doctrine_metadata_dialog import DoctrineMetadataDialog
 from app.gui.dialogs.escape_ship_chooser import EscapeShipChooser
+from app.loaders.fitting_loader import parse_fit
 from app.loaders.fitting_validator import fittingValidator
 from app.loaders.role_manager import fitting_in_use
 from app.paths import EVE_DB_PATH
@@ -421,19 +423,49 @@ class FittingsTab:
         ).start()
 
     def _execute_replace(self, fit_text, fit_uid):
+        """Worker: parse the edited text, then ask on the Tk thread if it's the same as another fitting."""
         try:
-            db_path = EVE_DB_PATH
+            parsed = parse_fit(fit_text, str(EVE_DB_PATH))
+            if not parsed:
+                raise ValueError("Fit text did not produce a fitting record")
+            duplicates = self.fitting_manager.find_duplicates(parsed, self._equivalence_key(), exclude_uid=fit_uid)
+            self.root.after(0, lambda: self._save_replacement(parsed, fit_uid, duplicates))
+        except Exception as error:
+            self._log(f"[ERROR] Replacement failed: {error}")
+            self.root.after(0, lambda error=error: messagebox.showerror(
+                "Replace Failed", f"The fitting could not be replaced:\n\n{error}"))
+            self.btn_replace_fitting.config(state=tk.NORMAL)
+
+    def _equivalence_key(self):
+        """Identical-stat twins count as the same item in the duplicate check, as in the audit."""
+        rules = getattr(getattr(self.app, "audit_engine", None), "rules", None)
+        return rules.equivalence_key if rules is not None else None
+
+    def _duplicate_ok(self, duplicates, action: str) -> bool:
+        """With an identical fitting saved already, ask before saving another (the user's choice, 2026-10-06)."""
+        if not duplicates:
+            return True
+        names = "\n".join(f"• {fitting_label(d)} ({'shared doctrine' if d.get('source') == 'doctrine' else 'local'} "
+                          f"fitting)" for d in duplicates)
+        if messagebox.askyesno("Same Fitting Already Saved",
+                               f"This fit is the same as:\n\n{names}\n\n(same hull, modules, drones, fighters and "
+                               f"cargo). {action} anyway?"):
+            self._log(f"[INFO] Saved although it matches {', '.join(d['fit_name'] for d in duplicates)}.")
+            return True
+        self._log(f"[INFO] Not saved: the same as {', '.join(d['fit_name'] for d in duplicates)}.")
+        return False
+
+    def _save_replacement(self, parsed, fit_uid, duplicates):
+        """Tk thread: replace the fitting being edited, unless a duplicate was declined."""
+        try:
+            if not self._duplicate_ok(duplicates, "Save it"):
+                return
             # A replacement stays in the fitting's own UID namespace; the
             # "Shared Doctrine Fitting" box only applies to new imports.
             existing = self.fitting_manager.get_fitting(fit_uid)
             shared_doctrine = existing.get("source") == "doctrine" if existing else self.shared_doctrine_var.get()
-            replacement_succeeded = self.fitting_manager.import_fit(
-                fit_text,
-                shared_doctrine=shared_doctrine,
-                operation="replace",
-                fit_uid=fit_uid,
-                db_path=str(db_path)
-            )
+            replacement_succeeded = self.fitting_manager.replace_fitting(
+                fit_uid, parsed, source="doctrine" if shared_doctrine else "local")
             if replacement_succeeded:
                 updated_fitting = self.fitting_manager.get_fitting(fit_uid)
                 self._log(f"[SUCCESS] Replaced fitting UID {fit_uid}.")
@@ -495,19 +527,28 @@ class FittingsTab:
         self.btn_import.config(state=tk.DISABLED)
         threading.Thread(
             target=self._execute_fit_import,
-            args=(fit_text,),
+            args=(fit_text, bool(self.shared_doctrine_var.get())),      # the box as it was when Import was pressed
             daemon=True
         ).start()
 
-    def _execute_fit_import(self, fit_text):
+    def _execute_fit_import(self, fit_text, shared_doctrine=False):
+        """Worker: parse the pasted text, then ask on the Tk thread if it's the same as a saved fitting."""
         try:
-            db_path = EVE_DB_PATH
-            new_fitting = self.fitting_manager.import_fit(
-                fit_text,
-                shared_doctrine=self.shared_doctrine_var.get(),
-                operation="new",
-                db_path=str(db_path)
-            )
+            parsed = parse_fit(fit_text, str(EVE_DB_PATH))
+            if not parsed:
+                raise ValueError("Fit text did not produce a fitting record")
+            duplicates = self.fitting_manager.find_duplicates(parsed, self._equivalence_key())
+            self.root.after(0, lambda: self._save_import(parsed, duplicates, shared_doctrine))
+        except Exception as e:
+            self._log(f"[ERROR] Import failed: {str(e)}")
+            self.btn_import.config(state=tk.NORMAL)
+
+    def _save_import(self, parsed, duplicates, shared_doctrine=False):
+        """Tk thread: save the new fitting, unless it duplicates one and the user declines."""
+        try:
+            if not self._duplicate_ok(duplicates, "Import it"):
+                return
+            new_fitting = self.fitting_manager.create_fitting(parsed, source="doctrine" if shared_doctrine else "local")
             if new_fitting:
                 self._log(f"[SUCCESS] Imported fitting: {new_fitting['hull']} - {new_fitting['fit_name']}")
                 self.root.after(0, lambda: self._finish_saving(new_fitting))

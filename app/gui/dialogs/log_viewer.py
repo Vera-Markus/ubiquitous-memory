@@ -8,6 +8,7 @@ from tkinter import ttk
 from typing import Iterable
 
 from app.gui import style as ui_style
+from app.gui.window_placement import place_window
 
 
 class LogViewer:
@@ -32,6 +33,7 @@ class LogViewer:
 
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.append("".join(lines))
+        place_window(self.window)        # centred on the app, not top left
 
     def is_open(self) -> bool:
         try:

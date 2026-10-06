@@ -17,6 +17,7 @@ import queue
 import tkinter as tk
 from tkinter import ttk
 from app.gui import style as ui_style
+from app.gui.window_placement import place_window
 from typing import Dict, Iterable, Optional
 
 MB = 1024 * 1024
@@ -55,6 +56,7 @@ class ProgressDialog:
         self._closed = False
         self.window.lift()
         self.window.after(POLL_MS, self._poll)
+        place_window(self.window)        # centred on the app, not top left
 
     # --- any thread -------------------------------------------------------------------
 

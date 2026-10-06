@@ -7,7 +7,8 @@ from collections import deque
 from datetime import datetime, timedelta
 from app.paths import PROJECT_ROOT, GENERATED_DIR, CONFIG_DIR, EVE_DB_PATH, LOG_DIR, RAW_DIR, AUTH_DIR, CLONES_DIR, CORP_DIR
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
+from app.gui import themed_dialogs as messagebox
 
 from app.version import __version__
 from app.logging_config import GUI_LOGGER, session_log_path, start_session_log

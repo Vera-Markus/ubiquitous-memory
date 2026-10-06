@@ -1,5 +1,6 @@
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk
+from app.gui import themed_dialogs as messagebox
 
 from app.gui import style as ui_style
 from app.gui.grouped_list import GroupedList
@@ -75,7 +76,7 @@ class LibraryTab:
     def _handle_create_role(self):
         """Handles creating a new role."""
         # In a real app, this would open a dialog. For now, using a simple prompt.
-        import tkinter.simpledialog as sd
+        from app.gui import themed_dialogs as sd
         role_name = sd.askstring("New Role", "Enter role name:")
         if role_name:
             try:
@@ -95,7 +96,7 @@ class LibraryTab:
             return
         role_name = self.role_manager.get_role(role_uid)['role_name']
 
-        import tkinter.simpledialog as sd
+        from app.gui import themed_dialogs as sd
         new_name = sd.askstring("Rename Role", f"Enter new name for '{role_name}':", initialvalue=role_name)
         if new_name:
             try:
@@ -666,7 +667,7 @@ class LibraryTab:
             self._on_requirement_selected()
 
     def _handle_create_doctrine(self):
-        import tkinter.simpledialog as sd
+        from app.gui import themed_dialogs as sd
         name = sd.askstring("New Doctrine", "Enter doctrine name:")
         if name:
             try:
@@ -684,7 +685,7 @@ class LibraryTab:
             return
         doctrine_name = self.doctrine_manager.get_doctrine(doctrine_uid)['doctrine_name']
 
-        import tkinter.simpledialog as sd
+        from app.gui import themed_dialogs as sd
         new_name = sd.askstring("Rename Doctrine", f"Enter new name for '{doctrine_name}':", initialvalue=doctrine_name)
         if new_name:
             try:

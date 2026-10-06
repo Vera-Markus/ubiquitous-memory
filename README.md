@@ -11,6 +11,16 @@ A Windows desktop tool for fleet organisers in EVE Online. Build a library of fi
 
 **Help → User Guide** (F1) explains the workflows and how the tabs connect.
 
+## What's new in 1.0.0-rc4
+
+A small update to RC3: no new permissions and no database rebuild, so just install over RC3.
+
+- **Duplicate fits are caught.** Importing or saving a fit that's identical to one you already have (same hull, modules, drones, fighters and cargo) asks first and names the matching fitting, so you can import it anyway or stop.
+- **Pop-up windows open centred on the app,** not in the top-left corner of the screen.
+- **Message boxes and name prompts follow your colour theme,** and open without the Windows sound. (Save and open file windows are Windows' own and keep its look.)
+
+Coming from RC2? Read the RC3 notes below too.
+
 ## What's new in 1.0.0-rc3
 
 **Before your first audit, assign your ships.** The Doctrines tab now checks only ships that have a fitting assigned: open the **Ships** tab, select a ship (or several of one hull), choose its fitting and press **Assign Fitting**. A requirement with an unassigned hull at its place shows ⚪ *not checked*; right-click it → **Assign the Fitting to** to assign from the audit.

@@ -8,6 +8,7 @@ from typing import Callable, Dict, Optional
 
 from app.services.character_removal_service import CharacterRemovalService, RemovalPlan
 from app.gui.style import DANGER_BUTTON
+from app.gui.window_placement import place_window
 
 
 class RemoveCharacterDialog:
@@ -45,6 +46,7 @@ class RemoveCharacterDialog:
         if not self.combo.get() and len(self.labels) == 1:
             self.combo.current(0)
         self._show_plan()
+        place_window(self.window)        # centred on the app, not top left
 
     def selected_id(self) -> Optional[str]:
         return self.labels.get(self.combo.get())

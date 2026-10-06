@@ -1,6 +1,6 @@
 import threading
 import tkinter.filedialog as filedialog
-from tkinter import messagebox
+from app.gui import themed_dialogs as messagebox
 from typing import Any, Dict, Optional
 
 from app import paths

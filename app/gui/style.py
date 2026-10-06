@@ -11,8 +11,8 @@ colours those too.
 A theme change applies straight away: the ttk styles change in place, the classic
 widgets in every open window are recoloured, and a label showing a status colour
 (ERROR, WARN, ...) gets the new theme's colour for the same status. New windows
-take their colours from Tk's option database (which also reaches simpledialog).
-The Windows menu bar, message boxes and file dialogs keep the system look.
+take their colours from Tk's option database. Message boxes and the name prompt are
+drawn by themed_dialogs; the Windows menu bar and file dialogs keep the system look.
 """
 import json
 import logging
@@ -88,7 +88,9 @@ def apply(root, theme: str = DEFAULT_THEME) -> ttk.Style:
     remap = {old: new for old, new in zip(old_status, _status_colours()) if old}
     _recolour_open_windows(root, p, remap)
     if current_theme is None:
-        root.bind_class("Toplevel", "<Map>", lambda e: _title_bar(e.widget), add="+")
+        # After idle: recolouring the frame the moment a window maps made Tk forget where the
+        # window was placed (dialogs opened in the top-left corner instead of centred).
+        root.bind_class("Toplevel", "<Map>", lambda e: e.widget.after_idle(_title_bar, e.widget), add="+")
     current_theme = name
     _title_bar(root)
     return style

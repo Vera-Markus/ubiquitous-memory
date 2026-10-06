@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import ttk
 from app.gui import style as ui_style
 from app.gui.style import DANGER_BUTTON
+from app.gui.window_placement import place_window
 
 
 class ConfirmTypedDialog:
@@ -35,6 +36,7 @@ class ConfirmTypedDialog:
         self.btn_confirm.pack(side=tk.RIGHT, padx=5)
         self.entry.bind("<Return>", lambda e: self._confirm())
         self.entry.focus_set()
+        place_window(self.window)        # centred on the app, not top left
 
     def _update(self) -> None:
         self.btn_confirm.config(state=tk.NORMAL if self.typed.get().strip() == self.word else tk.DISABLED)

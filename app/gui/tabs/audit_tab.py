@@ -3,7 +3,8 @@ import logging
 import threading
 import tkinter as tk
 from datetime import datetime, timezone
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
+from app.gui import themed_dialogs as messagebox
 
 from app.gui.audit_presenter import (MISSING_ITEMS, Node, carried_by_item, character_icon, fuel_summary_node,
                                      packed_node, requirement_node)

@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from app.models.bay_registry import ESCAPE_BAY, SHIP_MAINTENANCE_BAY
 from app.models.doctrine_metadata import DoctrineMetadata, MetadataError, is_doctrine_fit_uid
@@ -133,6 +133,33 @@ class FittingManager:
         if operation != "new":
             raise ValueError("operation must be 'new' or 'replace'")
         return self.create_fitting(parsed_fit, source=source)
+
+    @staticmethod
+    def fit_signature(fitting: Dict[str, Any], key: Optional[Callable[[int], int]] = None) -> tuple:
+        """
+        What makes two fits the same: the hull, and each item's quantity in each place (the
+        slots, drones, fighters, cargo), counted by equivalence key when `key` is given (an
+        identical-stat twin is the same item, as in the audit). Names and doctrine requirements
+        don't count.
+        """
+        from app.services.audit.expectations import build_expectations
+
+        fit = fitting.get("fit") if isinstance(fitting.get("fit"), dict) else fitting
+        key = key or (lambda type_id: type_id)
+        contents = {}
+        for location, items in build_expectations(fit).items():
+            for item in items.values():
+                k = (location, key(item.type_id))
+                contents[k] = contents.get(k, 0) + item.quantity
+        hull = fitting.get("hull_type_id") or fit.get("hull_type_id") or str(fitting.get("hull") or fit.get("hull") or "")
+        return hull, tuple(sorted(contents.items()))
+
+    def find_duplicates(self, fitting: Dict[str, Any], key: Optional[Callable[[int], int]] = None,
+                        exclude_uid: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Saved fittings identical to `fitting` (a parsed fit or a record), apart from exclude_uid."""
+        wanted = self.fit_signature(fitting, key)
+        return [record for record in self.list_fittings()
+                if record.get("fit_uid") != exclude_uid and self.fit_signature(record, key) == wanted]
 
     def inject_fitting(self, fitting_data: Dict[str, Any]) -> None:
         """

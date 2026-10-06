@@ -10,6 +10,7 @@ from typing import Callable, Dict, Tuple
 
 from app.services.doctrine_import_service import ImportPlan
 from app.gui import style as ui_style
+from app.gui.window_placement import place_window
 
 RETIRED = "Retired by the fitting manager"
 
@@ -64,6 +65,7 @@ class RemovedRequirementsDialog:
             self.window.grab_set()
         except tk.TclError:
             pass
+        place_window(self.window)        # centred on the app, not top left
 
     def ticked(self):
         """(keep, move_to_personal): the ticked rows' keys."""

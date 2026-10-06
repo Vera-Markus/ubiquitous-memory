@@ -11,7 +11,8 @@ for example).
 import logging
 import tkinter as tk
 from datetime import datetime, timezone
-from tkinter import messagebox, ttk
+from tkinter import ttk
+from app.gui import themed_dialogs as messagebox
 
 from app import paths
 from app.asset_handling.corp_pull import load_corporations
