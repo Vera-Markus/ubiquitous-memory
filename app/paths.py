@@ -20,6 +20,8 @@ EVE_DB_PATH = DATA_DIR / "eve.db"
 # Writable directories (must be in PROJECT_ROOT/data)
 AUTH_DIR = DATA_DIR / "auth"
 RAW_DIR = DATA_DIR / "raw"
+CORP_DIR = DATA_DIR / "corp"           # corporation hangars per corporation, apart from raw/ (Phase 13)
+CLONES_DIR = DATA_DIR / "clones"      # clones and implants per character, apart from raw/ (aggregated)
 GENERATED_DIR = DATA_DIR / "generated"
 CONFIG_DIR = DATA_DIR / "config"
 LOG_DIR = DATA_DIR / "logs"          # one log file per session, newest three kept
@@ -37,6 +39,8 @@ def initialize_runtime_directories():
         DATA_DIR,
         AUTH_DIR,
         RAW_DIR,
+        CLONES_DIR,
+        CORP_DIR,
         GENERATED_DIR,
         CONFIG_DIR,
         LOG_DIR

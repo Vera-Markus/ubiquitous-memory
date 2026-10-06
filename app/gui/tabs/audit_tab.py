@@ -2,14 +2,21 @@ import asyncio
 import logging
 import threading
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timezone
 from tkinter import filedialog, messagebox, ttk
 
 from app.gui.audit_presenter import (MISSING_ITEMS, Node, carried_by_item, character_icon, fuel_summary_node,
                                      packed_node, requirement_node)
+from app import paths
+from app.asset_handling.corp_pull import load_corporations
 from app.loaders.role_manager import fitting_in_use
+from app.services.implant_rules import is_implant_set, set_name
+from app.services.tracking import TrackingContext
+
+ASSIGN_LABEL = "Assign the Fitting to"
 from app.models.audit_models import RequirementResult, ShipRequirementResult
 from app.services.shopping_list_service import ShoppingListService, item_key, items_text, merge_items, without_items
+from app.services.stock import StockIndex, list_text, merge_pulls
 from app.gui import style as ui_style
 
 logger = logging.getLogger(__name__)
@@ -34,6 +41,12 @@ class AuditTab:
         # which ships no longer have anything on it and may be added again.
         self._contributions = {}        # share -> [ShoppingListItem]: one ship's items, or "audit" for Add Every...
         self._added_ships = {}          # ship key on the list -> the share it's in
+        # Pull from stock before buying (plan 21): whose stock and which system each share draws on,
+        # in the order shares were added; the list's Pull lines, and what's left to buy.
+        self._share_places = {}         # share -> (holder {kind, id} or None, system ID or None)
+        self.pull_lines = []            # [PullLine]
+        self.buy_items = []             # [ShoppingListItem]
+        self.last_tracking = None       # the last audit's TrackingContext (its universe is the stock)
         self._shopping_rows = {}        # shopping list row -> item_key
         self._node_data = {}            # tree item -> the ShipRequirementResult behind a ship row
         self._audit_running = False
@@ -135,6 +148,10 @@ class AuditTab:
             label="Clear Shopping List",
             command=self._handle_clear_shopping_list
         )
+        # A NOT CHECKED requirement's hulls: give them its fitting (UI thoughts plan 18.4).
+        self.audit_tree_context_menu.add_separator()
+        self.assign_menu = tk.Menu(self.audit_tree_context_menu, tearoff=0)
+        self.audit_tree_context_menu.add_cascade(label=ASSIGN_LABEL, menu=self.assign_menu)
 
         # --- RIGHT SIDE: Shopping List Panel ---
         right_pane = ttk.Frame(main_paned_window)
@@ -188,6 +205,11 @@ class AuditTab:
         )
         self.btn_export_shopping_list.pack(side=tk.LEFT, expand=True, padx=10)
 
+        # Plan 21: only what has to be bought, for the game's Multibuy window.
+        self.btn_copy_multibuy = ttk.Button(button_frame, text="Copy Multibuy", command=self._handle_copy_multibuy,
+                                            state=tk.DISABLED)
+        self.btn_copy_multibuy.pack(side=tk.LEFT, expand=True, padx=10)
+
         self._update_shopping_list_ui()
 
 
@@ -206,9 +228,50 @@ class AuditTab:
 
         # Store the clicked item for the context menu actions
         self._last_clicked_item = item_id
+        target = self._assign_target(item_id)
+        self._fill_assign_menu(target)
+        self.audit_tree_context_menu.entryconfigure(ASSIGN_LABEL, state=tk.NORMAL if target else tk.DISABLED)
 
         # Show context menu at the cursor position
         self.audit_tree_context_menu.post(event.x_root, event.y_root)
+
+    # --- assigning a hull from a NOT CHECKED requirement (UI thoughts plan 18.4) -----------------
+
+    def _assign_target(self, item_id):
+        """(character ID, requirement result) for a NOT CHECKED requirement at or above the row, else None."""
+        while item_id:
+            data = self._node_data.get(item_id)
+            if isinstance(data, RequirementResult) and data.unassigned_hulls:
+                character = self.audit_tree.item(self.audit_tree.parent(item_id), "values")
+                return (str(character[0]), data) if character else None
+            item_id = self.audit_tree.parent(item_id)
+        return None
+
+    def _fill_assign_menu(self, target):
+        self.assign_menu.delete(0, tk.END)
+        if target is None:
+            return
+        character_id, result = target
+        hulls = result.unassigned_hulls
+        fit_name = hulls[0]["fit_name"]
+        for hull in hulls:
+            name = f'"{hull["custom_name"]}"' if hull["custom_name"] else f"(item {hull['item_id']})"
+            self.assign_menu.add_command(label=f"{name} as {fit_name}",
+                                         command=lambda h=hull: self._assign_hulls(character_id, [h]))
+        if len(hulls) > 1:
+            self.assign_menu.add_separator()
+            self.assign_menu.add_command(label=f"All {len(hulls)} as {fit_name}",
+                                         command=lambda: self._assign_hulls(character_id, hulls))
+
+    def _assign_hulls(self, character_id, hulls):
+        """Gives the hulls the requirement's fitting, owned by the character, then audits again."""
+        when = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        owner = {"kind": "character", "id": int(character_id)}
+        for hull in hulls:
+            self.app.ship_designations.assign(hull["item_id"], hull["type_id"], hull["fit_uid"], owner,
+                                              hull["custom_name"], when)
+        self._log(f"[INFO] Assigned {hulls[0]['fit_name']} to {len(hulls)} ship(s); auditing again.")
+        self._handle_run_doctrine_audit()
 
     def _shopping_service(self) -> ShoppingListService:
         return ShoppingListService(self.audit_engine.rules, self.app.evedb_loader.get_type_name)
@@ -230,6 +293,27 @@ class AuditTab:
             return result.ship_item_id if result.ship_item_id is not None else tree_item
         character = self.audit_tree.item(self.audit_tree.parent(tree_item), "values")
         return ("hull", str(character[0]) if character else "", result.req_uid)
+
+    def _share_place(self, tree_item, result):
+        """(the character as holder, the system) a ship or missing hull draws stock from (plan 21):
+        where the ship is; for a missing ship or hull, the requirement's system."""
+        item, requirement, holder = tree_item, None, None
+        while item and holder is None:
+            if requirement is None and isinstance(self._node_data.get(item), RequirementResult):
+                requirement = self._node_data[item]
+            values = self.audit_tree.item(item, "values")
+            if len(values) == 2 and str(values[0]).isdigit():          # a character row: (character, role)
+                holder = {"kind": "character", "id": int(values[0])}
+            item = self.audit_tree.parent(item)
+        system = None
+        if isinstance(result, ShipRequirementResult) and result.ship_item_id is not None and self.last_tracking:
+            sighting = self.last_tracking.universe.find(result.ship_item_id)
+            system = sighting.system_id if sighting is not None else None
+        if system is None and requirement is not None:
+            details = requirement.requirement_details or {}
+            system = details.get("system_id") or (self.app.evedb_loader.system_of(details["location_id"])
+                                                  if details.get("location_id") else None)
+        return holder, system
 
     def _handle_add_missing_items_to_list(self):
         """
@@ -253,10 +337,12 @@ class AuditTab:
         else:
             items = service.items_for_requirement(result)
         if not items:
-            messagebox.showinfo("Info", "This ship isn't missing anything. Refits and substitutes need nothing bought.")
+            messagebox.showinfo("Info", "Nothing to buy here. Refits, substitutes and implant sets kept "
+                                        "in another clone need nothing bought.")
             return
         self._contributions[key] = items
         self._added_ships[key] = key
+        self._share_places[key] = self._share_place(row, result)
         self._rebuild_shopping_items()
         self._mark_added(row)
         self._update_shopping_list_ui()
@@ -276,6 +362,8 @@ class AuditTab:
         for tree_item, row_result in self._node_data.items():
             if not isinstance(row_result, ShipRequirementResult):
                 continue
+            if row_result.placement in ("AWAY", "MISSING"):
+                continue        # away: refitted where it is (D4); missing: a replacement only by hand (D10)
             key = self._shopping_key(tree_item, row_result)
             if key in self._added_ships:
                 continue
@@ -283,6 +371,7 @@ class AuditTab:
             for type_id, (name, quantity) in service.ship_needs(row_result).items():
                 merged[type_id] = (name, max(merged.get(type_id, (name, 0))[1], quantity))
             rows_by_ship.setdefault(key, []).append(tree_item)
+            self._share_places.setdefault(key, self._share_place(tree_item, row_result))
         added = 0
         for key, needs in needs_by_ship.items():
             if not needs:
@@ -301,17 +390,39 @@ class AuditTab:
         for tree_item in self._rows_on_list(self._added_ships):
             self._unmark_added(tree_item)
         self.shopping_items = []
+        self.pull_lines, self.buy_items = [], []
         self._contributions = {}
         self._added_ships = {}
+        self._share_places = {}
         self._update_shopping_list_ui()
         self._log("[INFO] Shopping list cleared.")
 
     def _rebuild_shopping_items(self):
-        """The list is the merge of every share, summed by type and sorted by name."""
+        """
+        The list is the merge of every share, summed by type and sorted by name. Each share,
+        in the order added, first takes what its character has in its system (plan 21);
+        the rest is bought.
+        """
         items = []
         for share in self._contributions.values():
             items = merge_items(items, share)
         self.shopping_items = items
+        universe = getattr(self.last_tracking, "universe", None)
+        if universe is None:
+            self.pull_lines, self.buy_items = [], list(items)
+            return
+        rules = self.audit_engine.rules
+        index = StockIndex(universe, self.app.evedb_loader.location_label, self.app.evedb_loader.get_type_name,
+                           rules.equivalence_key if rules is not None else None)
+        service = self._shopping_service()
+        pulls, buy = [], []
+        for key, share in self._contributions.items():
+            holder, system = self._share_places.get(key, (None, None))
+            needs = {item_key(i): (i.item_name, i.quantity) for i in share if i.type_id is not None}
+            taken, left = index.allocate(holder, system, needs)
+            pulls += taken
+            buy = merge_items(buy, service.items(left) + [i for i in share if i.type_id is None])
+        self.pull_lines, self.buy_items = merge_pulls(pulls), buy
 
     def _on_shopping_right_click(self, event):
         row = self.shopping_tree.identify_row(event.y)
@@ -336,6 +447,7 @@ class AuditTab:
                 self._contributions[share] = remaining
             else:
                 del self._contributions[share]
+                self._share_places.pop(share, None)
         freed = [key for key, share in self._added_ships.items() if share not in self._contributions]
         for key in freed:
             del self._added_ships[key]
@@ -362,7 +474,7 @@ class AuditTab:
     def _unmark_added(self, ship_item):
         """Undo _mark_added: drop the "[x] " from a ship's (or missing hull's) lines."""
         if isinstance(self._node_data.get(ship_item), RequirementResult):
-            lines = list(self.audit_tree.get_children(ship_item))
+            lines = list(self.audit_tree.get_children(ship_item))[:1]     # the reason line, not the offers
         else:
             lines = [line for child in self.audit_tree.get_children(ship_item)
                      if tuple(self.audit_tree.item(child, "values")) == (MISSING_ITEMS,)
@@ -373,13 +485,20 @@ class AuditTab:
                 self.audit_tree.item(line, text=text[4:])
 
     def shopping_list_text(self) -> str:
-        """What Copy puts on the clipboard: one line per item."""
-        return items_text(self.shopping_items)
+        """What Copy and Export produce: the Pull lines, then the Buy lines, each under its heading
+        (just the items when there's nothing to pull)."""
+        if not self.pull_lines:
+            return items_text(self.buy_items)
+        return list_text(self.pull_lines, [item.line() for item in self.buy_items])
+
+    def multibuy_text(self) -> str:
+        """What Copy Multibuy puts on the clipboard: only what has to be bought, ready for the game."""
+        return items_text(self.buy_items)
 
     def _mark_added(self, ship_item):
         """Show "[x]" on the missing item lines of a ship (or the missing hull line) that's on the shopping list."""
         if isinstance(self._node_data.get(ship_item), RequirementResult):
-            for line in self.audit_tree.get_children(ship_item):
+            for line in list(self.audit_tree.get_children(ship_item))[:1]:     # the reason line, not the offers
                 text = self.audit_tree.item(line, "text")
                 if not text.startswith("[x] "):
                     self.audit_tree.item(line, text=f"[x] {text}")
@@ -395,25 +514,40 @@ class AuditTab:
         """Shows the shopping list, its totals, and enables Copy and Export when there's something on it."""
         self.shopping_tree.delete(*self.shopping_tree.get_children())
         self._shopping_rows = {}
-        for item in self.shopping_items:
+        # Plan 21: what's in stock nearby is pulled, under its own heading, before what's bought.
+        if self.pull_lines:
+            self.shopping_tree.insert("", tk.END, values=("Pull from stock", ""), tags=("heading",))
+            for pull in self.pull_lines:
+                row = self.shopping_tree.insert("", tk.END, values=(f"{pull.place} · {pull.where}: {pull.item_name}",
+                                                                    f"{pull.quantity:,}"))
+                self._shopping_rows[row] = pull.for_type_id
+            if self.buy_items:
+                self.shopping_tree.insert("", tk.END, values=("Buy", ""), tags=("heading",))
+        for item in self.buy_items:
             name = item.item_name + (f" (or {', '.join(item.alternatives)})" if item.alternatives else "")
             row = self.shopping_tree.insert("", tk.END, values=(name, f"{item.quantity:,}"))
             self._shopping_rows[row] = item_key(item)
+        self.shopping_tree.tag_configure("heading", font=(ui_style.FONT_FAMILY, 9, "bold"))
         if self.shopping_items:
             self.lbl_shopping_empty.place_forget()
-            units = sum(item.quantity for item in self.shopping_items)
-            kinds = len(self.shopping_items)
-            self.lbl_fleet_totals.config(text=f"{kinds} item type{'s' if kinds != 1 else ''} · "
-                                              f"{units:,} unit{'s' if units != 1 else ''}")
+            units = sum(item.quantity for item in self.buy_items)
+            kinds = len(self.buy_items)
+            text = f"{kinds} item type{'s' if kinds != 1 else ''} · {units:,} unit{'s' if units != 1 else ''} to buy"
+            if self.pull_lines:
+                pulled = sum(p.quantity for p in self.pull_lines)
+                text = f"{pulled:,} unit{'s' if pulled != 1 else ''} to pull from stock\n" + text
+            self.lbl_fleet_totals.config(text=text)
             self.fleet_totals_frame.pack(fill=tk.X, pady=10, padx=10)
             self.btn_copy_shopping_list.config(state=tk.NORMAL)
             self.btn_export_shopping_list.config(state=tk.NORMAL)
+            self.btn_copy_multibuy.config(state=tk.NORMAL if self.buy_items else tk.DISABLED)
         else:
             self.lbl_shopping_empty.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
             self.lbl_fleet_totals.config(text="")
             self.fleet_totals_frame.pack_forget()
             self.btn_copy_shopping_list.config(state=tk.DISABLED)
             self.btn_export_shopping_list.config(state=tk.DISABLED)
+            self.btn_copy_multibuy.config(state=tk.DISABLED)
 
     def _handle_run_doctrine_audit(self):
         """Starts the doctrine audit on a worker thread (F8); the tree is drawn when it finishes."""
@@ -477,12 +611,14 @@ class AuditTab:
         results, packed, carried = [], {}, {}
         try:
             log(f"[INFO] Starting doctrine audit for: {doctrine_name}")
+            tracking = self._tracking_context(log)
+            self.last_tracking = tracking
             for char_id, char_name in characters.items():
                 log(f"[INFO] Character ID being audited: {char_id} ({char_name})")
                 try:
                     snapshot = asyncio.run(self.audit_collection_service.collect_audit_snapshot(char_id))
                     log(f"[INFO] Snapshot collected for {char_name}")
-                    char_results = self.audit_engine.audit(snapshot)
+                    char_results = self.audit_engine.audit(snapshot, tracking)
                     results.extend(char_results)
                     packed[char_id] = self.audit_engine.check_carried_ships(snapshot, char_results)
                     carried[char_id] = list(snapshot.carried_ships)
@@ -491,6 +627,17 @@ class AuditTab:
             self.root.after(0, self._finish_audit, doctrine_name, doctrine_data, results, packed, carried, None)
         except Exception as e:
             self.root.after(0, self._finish_audit, doctrine_name, doctrine_data, results, packed, carried, e)
+
+    def _tracking_context(self, log):
+        """Assigned ships for this audit run (UI thoughts plan 18.3); None (every hull at the place) if it can't be built."""
+        try:
+            names = dict(getattr(self.app.auth_service, "index", {}) or {})
+            self.app.ship_designations.prune(f["fit_uid"] for f in self.fitting_manager.list_fittings())
+            return TrackingContext.load(self.audit_collection_service.generated_dir, load_corporations(paths.CORP_DIR),
+                                        self.app.evedb_loader, self.app.ship_designations, names)
+        except Exception as e:
+            log(f"[WARNING] Assigned ships couldn't be read; every ship of each hull is audited instead: {e}")
+            return None
 
     def _finish_audit(self, doctrine_name, doctrine_data, results, packed, carried, error):
         """Main thread: store the results and draw the tree."""
@@ -508,6 +655,9 @@ class AuditTab:
         self.last_carried_ships = carried
         self._populate_audit_tree(doctrine_name, doctrine_data)
         self._remark_added_ships()
+        if self._contributions:             # stock may have moved since: pull and buy again (plan 21)
+            self._rebuild_shopping_items()
+            self._update_shopping_list_ui()
         self._update_audit_tree_ui()
         self._log(f"[SUCCESS] Audit complete for {doctrine_name}. AuditResult count: {len(results)}")
 
@@ -537,7 +687,6 @@ class AuditTab:
             # This case is actually handled by the caller, but good for safety
             return
 
-        # --- DEBUG LOGGING ---
         logger.debug(f"Starting tree population. Roles: {len(roles)}")
 
         # Key by both character and role to support characters in multiple roles
@@ -613,6 +762,8 @@ class AuditTab:
                     fitting = self.fitting_manager.get_fitting(fit_uid)
                     fit_name = fitting.get('fit_name', 'Unknown Fit') if fitting else 'Unknown Fit'
                     hull = (fitting or {}).get('hull') or fit_name
+                    if is_implant_set(fitting):
+                        hull = f"Implants: {set_name(fitting)}"      # plan 15.3
                     notes = ((fitting or {}).get("doctrine_metadata") or {}).get("notes", "")
                     replacing = ""
                     if fit_uid != req.get('fit_uid'):
@@ -637,6 +788,17 @@ class AuditTab:
             messagebox.showinfo("Success", "Shopping list copied to clipboard.")
         else:
             self._log("[WARN] Shopping list is empty.")
+
+    def _handle_copy_multibuy(self):
+        """Copies only the Buy lines, ready to paste into the game's Multibuy."""
+        content = self.multibuy_text()
+        if not content:
+            self._log("[WARN] Nothing to buy: everything on the list can be pulled from stock.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(content)
+        self._log("[INFO] Buy lines copied to clipboard for Multibuy.")
+        messagebox.showinfo("Success", "The Buy lines were copied to the clipboard, ready for Multibuy.")
 
     def _handle_export_shopping_list(self):
         """Saves the shopping list to a .txt file: the same text Copy puts on the clipboard."""

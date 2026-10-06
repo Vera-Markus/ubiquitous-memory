@@ -63,8 +63,10 @@ class PackageActions:
         return DoctrineExportService(self.fitting_manager, self.role_manager, self.doctrine_manager)
 
     def _import_service(self) -> DoctrineImportService:
+        auth = getattr(self.app, "auth_service", None)
+        linked = dict(getattr(auth, "index", {}) or {}) if auth is not None else None     # the importer's characters
         return DoctrineImportService(self.fitting_manager, self.role_manager, self.doctrine_manager,
-                                     self.package_registry, self.evedb_loader)
+                                     self.package_registry, self.evedb_loader, linked_characters=linked)
 
     @staticmethod
     def _export_profiles() -> ExportProfiles:
@@ -187,6 +189,9 @@ class PackageActions:
                              ("Requirements kept:", result.get("requirements_kept", [])),
                              ("Moved to your own fittings:", result.get("moved_to_personal", [])),
                              ("Character assignments dropped:", result["dropped_assignments"]),
+                             ("Character assignments skipped, for characters you haven't added "
+                              "(add them in Characters ▸ Add Character, then import again):",
+                              result.get("skipped_assignments", [])),
                              ("Your own roles whose fitting was removed:", result["orphaned_local_requirements"]),
                              ("Warnings:", result["warnings"])):
             if items:

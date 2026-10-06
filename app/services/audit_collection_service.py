@@ -1,11 +1,22 @@
 import json
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Set
+from typing import Optional, Set
+from app import paths
 from app.models.asset_models import AuditSnapshot
 from app.loaders.doctrine_manager import DoctrineManager
 from app.loaders.hierarchy_builder import HierarchyBuilder
 from app.loaders.fitting_loader import EVEdbLoader
+from app.asset_handling.mutated_items import MutatedItems
+
+def annotate_mutated(raw_assets, generated_dir: Path) -> None:
+    """Each mutated item's base module, where Pull All has looked it up (plan 12.1-12.2)."""
+    mutated = MutatedItems(Path(generated_dir) / "mutated_items.json")
+    for a in raw_assets:
+        base = mutated.base_of(a.get('item_id'))
+        if base:
+            a['mutated_base'] = base
+
 
 class AuditCollectionService:
     """
@@ -13,10 +24,12 @@ class AuditCollectionService:
     It aggregates data from local files (assets) and local managers (doctrines/roles).
     """
 
-    def __init__(self, doctrine_manager: DoctrineManager, sde_loader: EVEdbLoader, generated_dir: Path):
+    def __init__(self, doctrine_manager: DoctrineManager, sde_loader: EVEdbLoader, generated_dir: Path,
+                 clones_dir: Optional[Path] = None):
         self.doctrine_manager = doctrine_manager
         self.sde_loader = sde_loader
         self.generated_dir = Path(generated_dir)
+        self.clones_dir = clones_dir        # None: the app's data/clones, looked up when used
 
     async def collect_audit_snapshot(self, character_id: int) -> AuditSnapshot:
         """
@@ -35,6 +48,7 @@ class AuditCollectionService:
         
         # Filter assets to only those belonging to this character_id
         raw_assets = [a for a in all_raw_assets if a.get('character_id') == character_id]
+        annotate_mutated(raw_assets, self.generated_dir)
         
         # 2. Ships (with their fittings), loose hangar items, and ships packed inside
         # other ships across the whole inventory (design §9.5)
@@ -74,4 +88,13 @@ class AuditCollectionService:
             stations=list(stations),
             assigned_role_uids=list(assigned_role_uids),
             carried_ships=carried_ships,
+            clones=self._clones(character_id),
         )
+
+    def _clones(self, character_id: int):
+        """The character's pulled clones and implants (plan 15.2); None when there's no file yet."""
+        path = Path(self.clones_dir or paths.CLONES_DIR) / f"{character_id}.json"
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None

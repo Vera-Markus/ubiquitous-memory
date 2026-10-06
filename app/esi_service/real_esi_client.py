@@ -117,8 +117,9 @@ class RealESIClient(IESIClient):
         try:
             response = await self._send(request, headers)
 
-            # Handle 401 Unauthorized with automatic refresh and retry
-            if response.status_code == 401 and self.auth_service:
+            # Handle 401 Unauthorized with automatic refresh and retry. A 401 for a scope the
+            # login lacks won't refresh away, so it goes straight back to the caller.
+            if response.status_code == 401 and self.auth_service and "scope" not in response.text:
                 logger.info("Detected 401 Unauthorized. Attempting token refresh...")
                 try:
                     await self.auth_service.refresh_access_token()

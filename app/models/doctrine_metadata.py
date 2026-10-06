@@ -13,11 +13,14 @@ maintenance bay, the escape ship), plus free-text notes.
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
-from app.models.bay_registry import BAYS, ESCAPE_BAY
+from app.models.bay_registry import BAYS, ESCAPE_BAY, SHIP_MAINTENANCE_BAY
 
 Match = Literal["type", "fit", "any_ship"]
 MATCHES = ("type", "fit", "any_ship")
 ESCAPE_ONLY_MATCHES = ("fit", "any_ship")
+# Bays whose entries can name a saved fitting: the escape ship, and ships carried in the
+# maintenance bay (UI thoughts plan 20.2; type_id is then the fitting's hull, cached).
+FIT_BAYS = (ESCAPE_BAY.key, SHIP_MAINTENANCE_BAY.key)
 
 # The doctrine fitting range, the same as FittingManager's DOCTRINE_UID_MIN/MAX
 # (tests/test_doctrine_metadata.py checks they agree).
@@ -78,6 +81,9 @@ class DoctrineMetadata:
     bays: Dict[str, List[BayRequirement]] = field(default_factory=dict)
     notes: str = ""
     updated_at: str = ""
+    # Full squadrons pre-loaded in the fighter tubes, per fighter type (UI thoughts plan 20.3, U11).
+    # Empty: tubes and bay are pooled, as before.
+    tubes: Dict[int, int] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "DoctrineMetadata":
@@ -96,19 +102,29 @@ class DoctrineMetadata:
             if not isinstance(entries, list):
                 raise MetadataError([f"{bay_key}: requirements must be a list"])
             bays[str(bay_key)] = [BayRequirement.from_dict(entry) for entry in entries]
-        return cls(bays=bays, notes=str(data.get("notes") or ""), updated_at=str(data.get("updated_at") or ""))
+        tubes_data = data.get("tubes") or {}
+        if not isinstance(tubes_data, dict):
+            raise MetadataError(["tubes must be an object keyed by fighter type ID"])
+        try:
+            tubes = {int(type_id): int(count) for type_id, count in tubes_data.items()}
+        except (TypeError, ValueError):
+            raise MetadataError(["tubes: fighter type IDs and squadron counts must be numbers"])
+        return cls(bays=bays, notes=str(data.get("notes") or ""), updated_at=str(data.get("updated_at") or ""),
+                   tubes=tubes)
 
     def to_dict(self) -> Dict[str, Any]:
         """What's saved. Empty bays are left out (an empty list is the same as a missing bay)."""
         out: Dict[str, Any] = {"bays": {key: [r.to_dict() for r in reqs] for key, reqs in self.bays.items() if reqs}}
         if self.notes:
             out["notes"] = self.notes
+        if any(self.tubes.values()):
+            out["tubes"] = {str(type_id): count for type_id, count in sorted(self.tubes.items()) if count}
         if self.updated_at:
             out["updated_at"] = self.updated_at
         return out
 
     def is_empty(self) -> bool:
-        return not any(self.bays.values()) and not self.notes.strip()
+        return not any(self.bays.values()) and not self.notes.strip() and not any(self.tubes.values())
 
     def requirements(self, bay_key: str) -> List[BayRequirement]:
         return list(self.bays.get(bay_key, []))
@@ -126,16 +142,18 @@ class DoctrineMetadata:
                 by_type: Dict[Any, BayRequirement] = {}
                 merged = []
                 for r in reqs:
-                    if r.match == "type" and r.type_id in by_type:
-                        by_type[r.type_id].min_quantity += r.min_quantity
+                    same = (r.match, r.fit_uid if r.match == "fit" else r.type_id)
+                    if r.match in ("type", "fit") and same in by_type:
+                        by_type[same].min_quantity += r.min_quantity
                         continue
                     copy = BayRequirement(**vars(r))
-                    if r.match == "type":
-                        by_type[r.type_id] = copy
+                    if r.match in ("type", "fit"):
+                        by_type[same] = copy
                     merged.append(copy)
             if merged:
                 bays[key] = merged
-        return DoctrineMetadata(bays=bays, notes=self.notes, updated_at=self.updated_at)
+        return DoctrineMetadata(bays=bays, notes=self.notes, updated_at=self.updated_at,
+                                tubes={t: n for t, n in self.tubes.items() if n})
 
     def problems(self, owner_fit_uid: Optional[int] = None) -> List[str]:
         """
@@ -144,6 +162,9 @@ class DoctrineMetadata:
         (1000-1999) may only recommend a doctrine escape fitting.
         """
         found: List[str] = []
+        for type_id, count in self.tubes.items():
+            if count < 0:
+                found.append(f"Fighter tubes: type {type_id} can't have fewer than 0 squadrons")
         for key, reqs in self.bays.items():
             bay = BAYS.get(key)
             if bay is None:
@@ -159,10 +180,17 @@ class DoctrineMetadata:
                 label = f"{bay.label}: {r.name or r.type_id}"
                 if r.match not in MATCHES:
                     found.append(f"{label}: unknown match {r.match!r}")
-                elif r.match in ESCAPE_ONLY_MATCHES:
-                    found.append(f"{label}: a fitting or 'Any' can only be required in the {ESCAPE_BAY.label}")
+                elif r.match == "any_ship" or (r.match == "fit" and key not in FIT_BAYS):
+                    found.append(f"{label}: a fitting or 'Any' can only be required in the {ESCAPE_BAY.label}"
+                                 + (" or the Ship Maintenance Bay" if r.match == "fit" else ""))
                 if r.match == "type" and (r.type_id is None or r.type_id <= 0):
                     found.append(f"{label}: needs a type ID")
+                if r.match == "fit" and key in FIT_BAYS:
+                    if r.fit_uid is None:
+                        found.append(f"{label}: no fitting chosen")
+                    elif is_doctrine_fit_uid(owner_fit_uid) and not is_doctrine_fit_uid(r.fit_uid):
+                        found.append(f"{label}: a doctrine fitting can only name doctrine fittings "
+                                     f"(UID {r.fit_uid} is a local fitting)")
                 if r.min_quantity < 1:
                     found.append(f"{label}: quantity must be at least 1")
         return found

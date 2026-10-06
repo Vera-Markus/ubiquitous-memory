@@ -70,6 +70,11 @@ class ImportConfirmDialog:
             choice.pack(fill=tk.X)
             ttk.Radiobutton(choice, text="Keep mine", variable=self.use_package_assignments, value=False).pack(anchor=tk.W)
             ttk.Radiobutton(choice, text="Use the package's", variable=self.use_package_assignments, value=True).pack(anchor=tk.W)
+            if plan.unlinked_assignments:
+                n = len(plan.unlinked_assignments)
+                ttk.Label(choice, wraplength=620, justify=tk.LEFT, style=ui_style.HINT_LABEL,
+                          text=f"Using the package's skips {n} assignment{'s' if n != 1 else ''} for characters "
+                               "you haven't added: " + ", ".join(plan.unlinked_assignments)).pack(anchor=tk.W)
 
         buttons = ttk.Frame(body)
         buttons.pack(anchor=tk.E, pady=(10, 0))

@@ -49,6 +49,10 @@ THEMES = {
                        border="#3e2828", button="#2a1c1c", hover="#382424", accent="#e0323e",
                        select="#5e1a20", select_text="#ffffff", heading="#181111", trough="#171111",
                        error="#ff8f8f", warn="#ffc15e", ok="#7fd99a", info="#8ab8ff"),
+    "Light": dict(dark=False, bg="#f3f5f7", surface="#ffffff", text="#1d2733", muted="#66737f",
+                  border="#c5ced6", button="#e4e9ee", hover="#d6dee5", accent="#1f7fb0",
+                  select="#cfe5f2", select_text="#0d2233", heading="#e9eef2", trough="#e4e9ee",
+                  error="#c62828", warn="#b35c00", ok="#2e7d32", info="#1f6fb0"),
     "Bubblegum": dict(dark=False, bg="#fff0f5", surface="#ffffff", text="#4a2c3a", muted="#a07a8c",
                       border="#f4b6cc", button="#ffd6e5", hover="#ffc2d8", accent="#e8467c",
                       select="#ffc2d8", select_text="#3a1a28", heading="#ffe3ee", trough="#ffe3ee",
@@ -100,6 +104,19 @@ def load_theme(config_dir: Path) -> str:
 
 
 def save_theme(config_dir: Path, theme: str) -> None:
+    save_setting(config_dir, "theme", theme)
+
+
+def load_setting(config_dir: Path, key: str, default=None):
+    """One remembered UI setting (a switch, the theme) from ui_settings.json."""
+    try:
+        settings = json.loads((Path(config_dir) / SETTINGS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default
+    return settings.get(key, default) if isinstance(settings, dict) else default
+
+
+def save_setting(config_dir: Path, key: str, value) -> None:
     path = Path(config_dir) / SETTINGS_FILE
     try:
         settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -107,12 +124,12 @@ def save_theme(config_dir: Path, theme: str) -> None:
             settings = {}
     except (OSError, ValueError):
         settings = {}
-    settings["theme"] = theme
+    settings[key] = value
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     except OSError as e:
-        logger.warning(f"Couldn't save the theme to {path}: {e}")
+        logger.warning(f"Couldn't save the setting {key} to {path}: {e}")
 
 
 class ScrolledText(tk.Text):

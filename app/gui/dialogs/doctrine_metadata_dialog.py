@@ -12,8 +12,11 @@ from typing import Callable, Dict, Optional
 from app.models.bay_registry import ESCAPE_BAY
 from app.models.doctrine_metadata import DoctrineMetadata, MetadataError
 from app.gui import style as ui_style
+from app.gui.dialogs.carried_editor import CarriedEditor
+from app.gui.dialogs.fuel_editor import FuelEditor
 from app.services.doctrine_metadata_form import (capacity_text, escape_label, escape_options, filter_options,
-                                                 build_metadata, fuel_suggestions, metadata_bays, requirements_text)
+                                                 build_metadata, fuel_rows, fuel_suggestions, hull_type_id_of,
+                                                 metadata_bays, requirements_text, tube_problems, tube_rows)
 
 
 
@@ -45,6 +48,11 @@ class DoctrineMetadataDialog:
         self.bays = metadata_bays(fitting, app.evedb_loader)
         self.texts: Dict[str, tk.Text] = {}
         self.escape: Optional[EscapeCombo] = None
+        self.fuel: Optional[FuelEditor] = None          # the Fuel Bay's sliders (plan 20.1)
+        self.carried: Optional[CarriedEditor] = None    # the Ship Maintenance Bay's list (plan 20.2)
+        self.tubes = []                                 # fighter tubes (plan 20.3): (TubeRow, Spinbox)
+        hull_type_id = hull_type_id_of(fitting, app.evedb_loader)
+        self.tube_count = app.evedb_loader.get_fighter_tubes(hull_type_id) if hull_type_id else 0
         self._acknowledged_warnings = None
         self._confirm_clear = False
 
@@ -68,19 +76,41 @@ class DoctrineMetadataDialog:
             label = f"{bay.label} + cargo" if bay.pooled_with_cargo else bay.label
             frame = ttk.LabelFrame(body, text=f"{label} ({capacity_text(bay, capacity)})", padding=(5, 5))
             frame.grid(row=index // 2, column=index % 2, sticky="nsew", padx=5, pady=5)
+            if bay.key == "fuel_bay":
+                rows = fuel_rows(self.fitting, self.existing.requirements(bay.key), self.app.evedb_loader)
+                self.fuel = FuelEditor(frame, rows, capacity, self.app.evedb_loader)
+                self.fuel.frame.pack(fill=tk.BOTH, expand=True)
+                _, hint = fuel_suggestions(self.fitting, self.app.evedb_loader)
+                if hint:
+                    ttk.Label(frame, text=hint, justify=tk.LEFT, foreground=ui_style.MUTED).pack(anchor=tk.W)
+                continue
+            if bay.key == "ship_maintenance_bay":
+                self.carried = CarriedEditor(frame, self.fitting, self.existing.requirements(bay.key), capacity, self.app)
+                self.carried.frame.pack(fill=tk.BOTH, expand=True)
+                continue
             text = tk.Text(frame, width=40, height=6, undo=True)
             text.pack(fill=tk.BOTH, expand=True)
-            current = requirements_text(self.existing.requirements(bay.key))
-            hint = ""
-            if bay.key == "fuel_bay":
-                suggested, hint = fuel_suggestions(self.fitting, self.app.evedb_loader)
-                current = current or suggested
-            text.insert("1.0", current)
-            if hint:
-                ttk.Label(frame, text=hint, justify=tk.LEFT, foreground=ui_style.MUTED).pack(anchor=tk.W)
+            text.insert("1.0", requirements_text(self.existing.requirements(bay.key)))
             self.texts[bay.key] = text
 
         rows = (len(boxes) + 1) // 2
+        tube_rows_ = tube_rows(self.fitting, self.existing.tubes, self.app.evedb_loader) if self.tube_count else []
+        if tube_rows_:
+            frame = ttk.LabelFrame(body, text=f"Fighter tubes ({self.tube_count}): full squadrons pre-loaded",
+                                   padding=(5, 5))
+            frame.grid(row=rows, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+            for index, row in enumerate(tube_rows_):
+                ttk.Label(frame, text=row.name).grid(row=index, column=0, sticky=tk.W, padx=(0, 8))
+                box = ttk.Spinbox(frame, from_=0, to=self.tube_count, width=4)
+                box.set(row.squadrons)
+                box.grid(row=index, column=1, sticky=tk.W, pady=1)
+                ttk.Label(frame, text=f"squadrons of {row.squadron_size} · the fit lists {row.listed}",
+                          style=ui_style.HINT_LABEL).grid(row=index, column=2, sticky=tk.W, padx=8)
+                self.tubes.append((row, box))
+            ttk.Label(frame, text="All 0: tubes and bay are counted together. Otherwise the tubes must hold exactly "
+                                  "these squadrons and the bay exactly the rest.", style=ui_style.HINT_LABEL,
+                      wraplength=600, justify=tk.LEFT).grid(row=len(tube_rows_), column=0, columnspan=3, sticky=tk.W)
+            rows += 1
         if any(bay.key == ESCAPE_BAY.key for bay, _ in self.bays):
             frame = ttk.LabelFrame(body, text=f"{ESCAPE_BAY.label} (1 ship)", padding=(5, 5))
             frame.grid(row=rows, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
@@ -117,10 +147,28 @@ class DoctrineMetadataDialog:
 
     def save(self):
         existing_escape = (self.existing.requirements(ESCAPE_BAY.key) or [None])[0]
-        result = build_metadata({key: text.get("1.0", tk.END) for key, text in self.texts.items()},
+        texts = {key: text.get("1.0", tk.END) for key, text in self.texts.items()}
+        if self.fuel is not None:
+            texts["fuel_bay"] = self.fuel.text()
+        result = build_metadata(texts,
                                 self.escape.get() if self.escape else None,
                                 self.escape.options if self.escape else [],
-                                self.notes.get(), self.app.evedb_loader, existing_escape)
+                                self.notes.get(), self.app.evedb_loader, existing_escape,
+                                self.carried.entries if self.carried is not None else None)
+        if self.fuel is not None:
+            result.warnings[:0] = self.fuel.warnings()
+        if self.carried is not None:
+            result.warnings += self.carried.warnings()
+        if self.tubes:
+            rows = []
+            for row, box in self.tubes:
+                try:
+                    row.squadrons = max(0, int(box.get() or 0))
+                except ValueError:
+                    result.errors.append(f"Fighter tubes: {row.name} needs a number of squadrons")
+                rows.append(row)
+            result.errors += tube_problems(rows, self.tube_count, self.fitting.get("hull", ""))
+            result.metadata.tubes = {r.type_id: r.squadrons for r in rows if r.squadrons}
         if result.errors:
             self._show(["Fix these before saving:"] + [f"• {e}" for e in result.errors], ui_style.ERROR)
             return

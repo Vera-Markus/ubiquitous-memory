@@ -73,17 +73,65 @@ def get_locations_from_db(db_path: Path) -> Optional[Dict[str, dict]]:
     return resolved_map
 
 
+def corporation_assets(corp_dir: Path) -> List[dict]:
+    """
+    Every corporation pull's assets, each credited to the character who pulled it, so that
+    Director is tried first when one of the corporation's structures is named (Phase 14.1).
+    """
+    out: List[dict] = []
+    for path in sorted(Path(corp_dir).glob("*.json")) if Path(corp_dir).exists() else []:
+        try:
+            corp = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        puller = corp.get("pulled_by")
+        for asset in corp.get("assets", []) if isinstance(corp, dict) else []:
+            if isinstance(asset, dict):
+                out.append(dict(asset, character_id=puller))
+    return out
+
+
+def clone_locations(clones_dir: Path) -> List[dict]:
+    """
+    Each jump clone's station or structure as a location-only entry (no item), credited to
+    its character, so a structure where a set is kept gets named even with no assets in it
+    (implant sets, plan 15.2).
+    """
+    out: List[dict] = []
+    for path in sorted(Path(clones_dir).glob("*.json")) if Path(clones_dir).exists() else []:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        for clone in record.get("jump_clones") or []:
+            if isinstance(clone, dict) and clone.get("location_id"):
+                out.append({"location_id": clone["location_id"], "location_flag": "Hangar",
+                            "character_id": record.get("character_id")})
+    return out
+
+
 def build_location_cache(
     assets_path: Optional[Path] = None,
     db_path: Optional[Path] = None,
     cache_path: Optional[Path] = None,
     log: Callable[[str], None] = logger.info,
+    corp_dir: Optional[Path] = None,
+    clones_dir: Optional[Path] = None,
 ) -> Optional[dict]:
     """
-    Updates the location cache from the aggregated assets and the SDE, without
-    calling ESI. Entries already resolved (for example structures named on an
-    earlier run) are kept. Returns a summary, or None if an input is missing.
+    Updates the location cache from the aggregated assets (and the corporation pulls)
+    and the SDE, without calling ESI. Entries already resolved (for example structures
+    named on an earlier run) are kept. Returns a summary, or None if an input is missing.
+    Corporation pulls are read from corp_dir, or from data/corp when no assets_path is
+    given (the app); a caller passing its own assets file gets none unless it says so.
+    Jump clone locations (clones_dir) follow the same rule.
     """
+    if corp_dir is None and assets_path is None:
+        corp_dir = paths.CORP_DIR
+    if clones_dir is None and assets_path is None:
+        clones_dir = paths.CLONES_DIR
     assets_path = Path(assets_path or paths.GENERATED_DIR / "all_assets.json")
     db_path = Path(db_path or paths.EVE_DB_PATH)
     cache_path = Path(cache_path or paths.GENERATED_DIR / "location_cache.json")
@@ -97,6 +145,10 @@ def build_location_cache(
 
     with open(assets_path, "r", encoding="utf-8") as f:
         assets = json.load(f)
+    if corp_dir is not None:
+        assets = assets + corporation_assets(Path(corp_dir))
+    if clones_dir is not None:
+        assets = assets + clone_locations(Path(clones_dir))
 
     # location_id -> location_flags seen with it, and the characters with assets there
     asset_location_map: Dict[int, set] = {}
@@ -163,12 +215,14 @@ async def update_location_cache(
     cache_path: Optional[Path] = None,
     log: Callable[[str], None] = logger.info,
     auth_service: Any = None,
+    corp_dir: Optional[Path] = None,
+    clones_dir: Optional[Path] = None,
 ) -> Optional[dict]:
     """
     Builds the cache, then names structures through ESI when a client is given. With an
     AuthService, each structure is tried with every logged-in character in turn.
     """
-    summary = build_location_cache(assets_path, db_path, cache_path, log)
+    summary = build_location_cache(assets_path, db_path, cache_path, log, corp_dir, clones_dir)
     if summary is None:
         return None
     summary["resolved"] = 0

@@ -13,10 +13,11 @@ class AssetPipelineService:
     """
     Service responsible for orchestrating the asset synchronization pipeline.
     """
-    def __init__(self, auth_service: Optional[AuthService] = None):
+    def __init__(self, auth_service: Optional[AuthService] = None, ship_designations=None):
         # The app's one AuthService (F7): logins, removals and token refreshes all go
         # through it. Without one (tools, tests), a pull makes its own.
         self.auth_service = auth_service
+        self.ship_designations = ship_designations     # the app's ShipDesignations: last seen, 30-day expiry
         self._is_running = False
         self._start_lock = threading.Lock()     # the GUI button and the auto-pull timer can race
 
@@ -66,6 +67,15 @@ class AssetPipelineService:
             log_callback("[INFO] Running asset aggregation...")
             
             aggregate_assets("all_assets.json", log_callback)
+
+            # Ships' assigned fittings: mark the ships this pull saw, forget any unseen for 30 days.
+            if self.ship_designations is not None:
+                try:
+                    from app import paths
+                    from app.loaders.ship_designations import refresh_from_pull
+                    refresh_from_pull(self.ship_designations, paths.GENERATED_DIR, paths.CORP_DIR, log_callback)
+                except Exception as e:
+                    log_callback(f"[WARNING] Couldn't update the ships' assigned fittings: {e}")
 
             # 3. Name every location the assets sit in (NPC stations from the SDE,
             # player structures through ESI) so the audit can match them. The

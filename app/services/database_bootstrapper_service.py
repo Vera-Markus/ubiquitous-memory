@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 CHUNK = 1024 * 1024
 
-# CCP's official SDE (docs/SDE_MIGRATION_PLAN.md, step 9.3). latest.jsonl names the
+# CCP's official SDE (docs/archive/SDE_MIGRATION_PLAN.md, step 9.3). latest.jsonl names the
 # current release; each release's zip has its own URL, so the build recorded is the
 # one actually downloaded even if CCP publishes another mid-download.
 LATEST_URL = "https://developers.eveonline.com/static-data/tranquility/latest.jsonl"

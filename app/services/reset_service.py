@@ -51,7 +51,8 @@ class ResetService:
     """Service responsible for resetting local application data."""
 
     def __init__(self, project_root: Path, auth_dir: Optional[Path] = None, raw_dir: Optional[Path] = None,
-                 generated_dir: Optional[Path] = None, config_dir: Optional[Path] = None):
+                 generated_dir: Optional[Path] = None, config_dir: Optional[Path] = None,
+                 clones_dir: Optional[Path] = None, corp_dir: Optional[Path] = None):
         """
         Initialize the ResetService.
 
@@ -66,11 +67,17 @@ class ResetService:
         self.raw_dir = Path(raw_dir or data / "raw")
         self.generated_dir = Path(generated_dir or data / "generated")
         self.config_dir = Path(config_dir or data / "config")
+        self.clones_dir = Path(clones_dir or self.raw_dir.parent / "clones")
+        self.corp_dir = Path(corp_dir or self.raw_dir.parent / "corp")
 
     # --- Clear Asset Data ------------------------------------------------------------------
 
     def asset_files(self) -> List[Path]:
         files = sorted(self.raw_dir.glob("*.json")) if self.raw_dir.exists() else []
+        if self.clones_dir.exists():
+            files += sorted(self.clones_dir.glob("*.json"))      # clones and implants: pulled data too
+        if self.corp_dir.exists():
+            files += sorted(self.corp_dir.glob("*.json"))        # corporation hangars: pulled data too
         if (self.generated_dir / "all_assets.json").exists():
             files.append(self.generated_dir / "all_assets.json")
         return files
@@ -131,13 +138,18 @@ class ResetService:
 
     # --- Clear Library -------------------------------------------------------------------------
 
-    def clear_library(self, fittings: Any, roles: Any, doctrines: Any, registry: Any) -> Tuple[int, int, int]:
+    def clear_library(self, fittings: Any, roles: Any, doctrines: Any, registry: Any,
+                      ship_designations: Any = None) -> Tuple[int, int, int]:
         """
         Deletes every fitting, role and doctrine (with their requirements and
-        character assignments), the installed-package records and the remembered
-        export package names. Asset data and logins stay. Returns the counts removed.
+        character assignments), the installed-package records, the remembered
+        export package names and the ships' designations (they point at
+        fittings).
+        Asset data and logins stay. Returns the counts removed.
         """
         counts = (len(fittings.list_fittings()), len(roles.roles), len(doctrines.doctrines))
+        if ship_designations is not None:
+            ship_designations.clear()
         doctrines.clear()
         roles.clear()
         fittings.clear()
@@ -166,6 +178,8 @@ class ResetService:
             paths_to_clear = [
                 self.auth_dir,
                 self.raw_dir,
+                self.clones_dir,
+                self.corp_dir,
                 self.generated_dir,
                 self.config_dir / "pull_state.json",
                 self.config_dir / "esi_cache.json",

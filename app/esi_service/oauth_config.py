@@ -9,11 +9,11 @@ from typing import List
 CLIENT_ID = "ce1794f8622a499fa9016460dfbd040a"
 REDIRECT_URI = "http://localhost:8080/"
 
-# Requested ESI Scopes
-# Note: 'publicData' is the minimum for /characters/ endpoint.
-SCOPES: List[str] = ["esi-assets.read_assets.v1", "esi-universe.read_structures.v1", "publicData"]
-
-# Planned (not requested yet): corporation asset pulls will need
-#   "esi-assets.read_corporation_assets.v1"
-# for GET /corporations/{corporation_id}/assets/ (needs a Director role in game).
-# Add it to SCOPES with that feature; until then nothing uses it, so logins don't ask for it.
+# Requested ESI Scopes: each one is used by a call the app makes (/characters/{id}/ is public and needs none).
+SCOPES: List[str] = ["esi-assets.read_assets.v1", "esi-universe.read_structures.v1",
+                     # Clones and implants (implants in doctrines): pulled with the assets.
+                     "esi-clones.read_implants.v1", "esi-clones.read_clones.v1",
+                     # Corporation hangars (tracked items plan, Phase 13): roles decide who pulls;
+                     # only a Director can read a corporation's assets and division names.
+                     "esi-characters.read_corporation_roles.v1", "esi-assets.read_corporation_assets.v1",
+                     "esi-corporations.read_divisions.v1"]

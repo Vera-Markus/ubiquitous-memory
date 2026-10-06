@@ -243,8 +243,9 @@ class FittingsTab:
         self.fitting_menu.post(event.x_root, event.y_root)
 
     def multibuy_text(self, fitting) -> str:
-        """The fitting as the game's Multibuy takes it: the hull and every item, one "Name x2" line each."""
-        return items_text(fitting_items(fitting))
+        """The fitting as the game's Multibuy takes it: the hull and every item, one "Name x2" line each.
+        Mutated modules are left out (they can't be bought on the market, M4)."""
+        return items_text(fitting_items(fitting, self.app.audit_engine.rules.is_mutated))
 
     def _handle_copy_multibuy(self):
         """Copies the selected fitting's hull and items to the clipboard, ready for Multibuy."""
@@ -296,6 +297,11 @@ class FittingsTab:
             names = [self.fitting_manager.get_fitting(uid)["fit_name"] for uid in references]
             message += (f"\n\nUsed as the escape ship by {len(references)} fitting(s):\n" + "\n".join(names) +
                         "\n\nTheir audits will warn until a new escape ship is chosen.")
+        carriers = self.fitting_manager.find_carried_references(fitting["fit_uid"])
+        if carriers:
+            names = [self.fitting_manager.get_fitting(uid)["fit_name"] for uid in carriers]
+            message += (f"\n\nCarried in the Ship Maintenance Bay of {len(carriers)} fitting(s):\n" + "\n".join(names) +
+                        "\n\nThose entries will then accept any fitting of the hull.")
         # Roles that use it: their requirements for it are removed with it, so the Library never
         # shows a missing fitting; where it's a pilot's replacement, the original applies again.
         fit_uid = fitting["fit_uid"]
@@ -312,6 +318,10 @@ class FittingsTab:
         if replacing:
             message += (f"\n\nA replacement in {len(replacing)} role requirement(s), which will go back to "
                         f"their original fitting:\n" + "\n".join(dict.fromkeys(replacing)))
+        designations = getattr(self.app, "ship_designations", None)
+        designated = [d for d in (designations.designations.values() if designations else []) if d["fit_uid"] == fit_uid]
+        if designated:
+            message += f"\n\n{len(designated)} ship(s) assigned this fitting in the Ships tab will lose it."
         confirm = messagebox.askyesno("Confirm Deletion", message)
 
         if confirm:
@@ -319,6 +329,8 @@ class FittingsTab:
                 success = self.fitting_manager.delete_fitting(fit_uid)
                 if success:
                     removed = self.role_manager.remove_requirements_for_fittings([fit_uid])
+                    if designations is not None:
+                        designations.prune(f["fit_uid"] for f in self.fitting_manager.list_fittings())
                     if removed or replacing:
                         self._log(f"[INFO] Removed {removed} requirement(s) and {len(replacing)} replacement(s) "
                                   f"for {fitting_name}")

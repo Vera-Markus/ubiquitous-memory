@@ -28,8 +28,10 @@ CATEGORY_SUBSYSTEM = 32
 CATEGORY_FIGHTER = 87
 
 META_LEVEL = 633
+IMPLANT_SLOT = 331            # implantness: the slot an implant goes in (1-10)
 META_GROUP_TECH_II = 2
 META_GROUP_FACTION = 4
+META_GROUP_ABYSSAL = 15       # mutated modules (TRACKED_ITEMS_DESIGN.md §9a)
 BLING_CATEGORIES = (CATEGORY_MODULE, CATEGORY_FIGHTER, CATEGORY_DRONE)
 EFFECT_LAUNCHER_FITTED, EFFECT_TURRET_FITTED = 40, 42
 
@@ -57,6 +59,7 @@ class SdeRules:
         self._equivalents: Dict[int, Tuple[int, ...]] = {}
         self._squadron: Dict[int, int] = {}
         self._meta: Dict[int, Tuple[float, Optional[int], bool, str]] = {}
+        self._implant_slot: Dict[int, Optional[int]] = {}
 
     def close(self) -> None:
         self._conn.close()
@@ -142,6 +145,13 @@ class SdeRules:
                                    group[0][0] if group else None, bool(weapon), name[0][0] if name else "")
         return self._meta[type_id]
 
+    def type_name(self, type_id: int) -> str:
+        return self._meta_info(type_id)[3] or f"type {type_id}"
+
+    def is_mutated(self, type_id: int) -> bool:
+        """A mutated (Abyssal) module or drone type: one generic type per group, rolls per item."""
+        return self._meta_info(type_id)[1] == META_GROUP_ABYSSAL
+
     def is_tech_ii_charge(self, type_id: int) -> bool:
         return self.category(type_id) == CATEGORY_CHARGE and self._meta_info(type_id)[1] == META_GROUP_TECH_II
 
@@ -168,6 +178,16 @@ class SdeRules:
         if weapon and carries_t2_ammo and group != META_GROUP_TECH_II:
             return False
         return True
+
+    # --- implants (tracked items plan, Phase 15) -------------------------------------------
+
+    def implant_slot(self, type_id: int) -> Optional[int]:
+        """The slot (1-10) an implant goes in; None for anything that isn't an implant."""
+        if type_id not in self._implant_slot:
+            row = self._rows("SELECT COALESCE(valueFloat, valueInt) FROM dgmTypeAttributes "
+                             "WHERE typeID = ? AND attributeID = ?", (type_id, IMPLANT_SLOT))
+            self._implant_slot[type_id] = int(row[0][0]) if row and row[0][0] else None
+        return self._implant_slot[type_id]
 
     # --- fighters (decision D22) -----------------------------------------------------------
 

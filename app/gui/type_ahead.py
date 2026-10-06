@@ -13,6 +13,10 @@ type, takes a name as soon as it's typed exactly, and says when nothing matches:
 - Enter takes the only match; with several, it opens the narrowed list to pick from.
 - Leaving the box with text that matches nothing puts back the last name taken.
 - The hint label says how many names match, or that none do.
+- Clicking into the box (UI thoughts 10, plan 17.1): the first click puts the cursor at the
+  start and the first letter typed replaces the whole name, so "Amarr" typed over "Jita"
+  never becomes "rakJita". A second click, once the box has focus, goes to the end of the
+  text to edit it instead.
 """
 import tkinter as tk
 from typing import Callable, List, Optional, Sequence
@@ -33,7 +37,10 @@ class TypeAhead:
         self.pinned = list(pinned)          # always first when they match, e.g. "<Any System>"
         self.choices: List[str] = []
         self.accepted = ""
+        self.replace_on_type = False        # armed by the first click: the next letter clears the box
         combo.configure(state="normal")
+        combo.bind("<Button-1>", self.on_click, add="+")
+        combo.bind("<KeyPress>", self.on_press, add="+")
         combo.bind("<KeyRelease>", self.on_key, add="+")
         combo.bind("<Return>", self.on_enter, add="+")
         combo.bind("<KP_Enter>", self.on_enter, add="+")
@@ -70,6 +77,28 @@ class TypeAhead:
 
     # --- events -------------------------------------------------------------------------
 
+    def _has_focus(self) -> bool:
+        try:
+            return self.combo.focus_get() == self.combo
+        except (KeyError, tk.TclError):
+            return False
+
+    def on_click(self, event=None, focused: Optional[bool] = None) -> None:
+        """First click: cursor to the start, the next letter replaces the text. Second: cursor to the end."""
+        focused = self._has_focus() if focused is None else focused
+        self.replace_on_type = not focused
+        position = 0 if not focused else tk.END
+        self.combo.after_idle(lambda: self.combo.icursor(position))    # after Tk places the cursor itself
+
+    def on_press(self, event=None) -> None:
+        """The first key after the first click: a letter (or digit, space ...) clears the box first."""
+        if not self.replace_on_type:
+            return
+        self.replace_on_type = False
+        char = getattr(event, "char", "") if event is not None else ""
+        if len(char) == 1 and char.isprintable():
+            self.combo.delete(0, tk.END)
+
     def on_key(self, event=None) -> None:
         if event is not None and getattr(event, "keysym", "") in NAVIGATION_KEYS:
             return
@@ -102,6 +131,7 @@ class TypeAhead:
         return "break"
 
     def on_focus_out(self, event=None) -> None:
+        self.replace_on_type = False
         if event is not None:
             # Opening the list moves focus into it (a child of the box): only a real leave counts,
             # and focus has only moved once this event is over.

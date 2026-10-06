@@ -91,6 +91,9 @@ class ImportPlan:
     warnings: List[str] = field(default_factory=list)
     kept_assignments: Dict[int, Dict[str, List[str]]] = field(default_factory=dict)
     dropped_assignments: List[str] = field(default_factory=list)
+    # The package's assignments to characters the importer hasn't added (plan 17.3): skipped
+    # if "Use the package's" is chosen, and listed so a missing character of theirs stands out.
+    unlinked_assignments: List[str] = field(default_factory=list)
     package_has_assignments: bool = False
     orphaned_local_requirements: List[str] = field(default_factory=list)
     removed_names: List[str] = field(default_factory=list)
@@ -172,8 +175,10 @@ class ImportPlan:
 
 class DoctrineImportService:
     def __init__(self, fitting_manager: Any, role_manager: Any, doctrine_manager: Any, registry: PackageRegistry,
-                 sde_loader: Optional[Any] = None):
+                 sde_loader: Optional[Any] = None, linked_characters: Optional[Dict[str, str]] = None):
         self.fittings = fitting_manager
+        # {character_id: name} of the importer's own characters; None (tools, older tests): no filtering
+        self.linked = {str(k): v for k, v in linked_characters.items()} if linked_characters is not None else None
         self.roles = role_manager
         self.doctrines = doctrine_manager
         self.registry = registry
@@ -437,6 +442,16 @@ class DoctrineImportService:
                         plan.dropped_assignments.append(f"{character} in {role_name} ({local.get('doctrine_name', uid)})")
             if new is not None:
                 plan.kept_assignments[uid] = kept
+        if self.linked is None:
+            return
+        role_names = {str(r.get("role_uid")): r.get("role_name", "") for r in package.get("roles") or []}
+        for doctrine in package.get("doctrines") or []:
+            for role_key, characters in (doctrine.get("character_assignments") or {}).items():
+                for character in characters:
+                    if str(character) not in self.linked:
+                        plan.unlinked_assignments.append(
+                            f"{character} in {role_names.get(str(role_key)) or 'role ' + str(role_key)} "
+                            f"({doctrine.get('doctrine_name', doctrine.get('doctrine_uid'))})")
 
     def _find_orphaned_local_requirements(self, plan: ImportPlan) -> None:
         removed = set(plan.remove["fit"])
@@ -486,6 +501,7 @@ class DoctrineImportService:
         added, updated, removed = plan.counts()
         return {"package_name": plan.package_name, "added": added, "updated": updated, "removed": removed,
                 "dropped_assignments": list(plan.dropped_assignments), "warnings": list(plan.warnings),
+                "skipped_assignments": list(plan.unlinked_assignments) if use_package_assignments else [],
                 "fits_hull_changed": list(plan.fits_hull_changed), "kept_names": list(plan.kept_names),
                 "local_requirements_on_new_hull": list(plan.local_requirements_on_new_hull),
                 "orphaned_local_requirements": list(plan.orphaned_local_requirements),
@@ -546,6 +562,10 @@ class DoctrineImportService:
             uid = record["doctrine_uid"]
             if not (use_package_assignments and "character_assignments" in doctrine):
                 record["character_assignments"] = plan.kept_assignments.get(uid, {})
+            elif self.linked is not None:       # only the importer's own characters (plan 17.3)
+                record["character_assignments"] = {
+                    role: [c for c in characters if str(c) in self.linked]
+                    for role, characters in (doctrine.get("character_assignments") or {}).items()}
             self.doctrines.inject_doctrine(record)
 
         incoming = {kind: [r[UID_KEYS[kind]] for r in package.get(SECTIONS[kind]) or []] for kind in KINDS}

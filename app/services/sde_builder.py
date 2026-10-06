@@ -1,7 +1,7 @@
 """
 Builds data/eve.db from CCP's official SDE (the JSON Lines zip from
 developers.eveonline.com/static-data), in the shape the app reads: Fuzzwork's table
-and column names (docs/SDE_MIGRATION_PLAN.md, step 9.1).
+and column names (docs/archive/SDE_MIGRATION_PLAN.md, step 9.1).
 
 What goes into the database is declared in sde_tables.py: a Table copies fields
 from one JSONL file, a DerivedTable computes its rows (station names). This module

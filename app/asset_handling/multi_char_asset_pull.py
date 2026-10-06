@@ -8,8 +8,13 @@ from app.esi_service.esi_settings import ESI_BASE_URL
 from app.esi_service.oauth_config import CLIENT_ID, REDIRECT_URI
 from app.esi_service.real_esi_client import RealESIClient
 from app.asset_handling.enrich_assets import enrich_assets_with_custom_names
+from app.asset_handling.clone_pull import pull_clones_for_character, token_scopes
+from app.asset_handling.corp_pull import load_corporations, pull_corporations
 from app.asset_handling.esi_cache_times import cached_until, record_expires
-from app.paths import RAW_DIR
+from app.asset_handling.mutated_items import MutatedItems
+from app.loaders.sde_rules import SdeRules
+from app.paths import EVE_DB_PATH, RAW_DIR
+from pathlib import Path
 from typing import Any, Callable
 
 logger = logging.getLogger("MultiCharAssetPull")
@@ -120,6 +125,27 @@ async def pull_assets_for_character(esi_client: RealESIClient, char_id: str, out
         logger.exception(f"[{char_id}] An error occurred during asset pull: {e}")
         return False
 
+async def refresh_mutated_items(esi_client, raw_dir: str) -> int:
+    """Looks up the base of every mutated item in the pulled assets that isn't known yet."""
+    if not EVE_DB_PATH.exists():
+        return 0
+    assets = []
+    for path in Path(raw_dir).glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, list):
+            assets.extend(a for a in data if isinstance(a, dict))
+    for corp in load_corporations():
+        assets.extend(a for a in corp.get("assets", []) if isinstance(a, dict))
+    rules = SdeRules(EVE_DB_PATH)
+    try:
+        return await MutatedItems().refresh(esi_client, assets, rules.is_mutated, log=logger.info)
+    finally:
+        rules.close()
+
+
 async def run_multi_char_pull(log_callback: Callable[[str], None] = None, auth_service: Any = None) -> bool:
     """
     Entry point for the multi-character asset pull.
@@ -183,9 +209,27 @@ async def _pull_all_characters(auth_service: Any) -> bool:
         
         success = await pull_assets_for_character(esi_client, char_id, output_dir, auth_service)
         results.append((char_id, success))
+        # Clones and implants: saved apart from the assets; a failure here doesn't fail the pull.
+        try:
+            await pull_clones_for_character(esi_client, char_id, auth_service.index.get(char_id, ""),
+                                            scopes=token_scopes(auth_service.get_access_token()))
+        except Exception as e:
+            logger.warning(f"[{char_id}] Clones and implants weren't pulled: {e}")
         
         # Restore original active ID
         auth_service.active_character_id = original_active_id
+
+    # Corporation hangars, from each corporation's lowest-ID linked Director (Phase 13).
+    try:
+        await pull_corporations(esi_client, auth_service)
+    except Exception as e:
+        logger.warning(f"Corp hangars weren't pulled: {e}")
+
+    # Mutated modules: each new one's base module, looked up once (TRACKED_ITEMS_PLAN.md 12.1).
+    try:
+        await refresh_mutated_items(esi_client, output_dir)
+    except Exception as e:
+        logger.warning(f"Mutated module lookups failed: {e}")
 
     await esi_client.close()
 

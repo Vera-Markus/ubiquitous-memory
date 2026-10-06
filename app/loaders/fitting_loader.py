@@ -30,6 +30,10 @@ MODULE_CONSUMPTION_TYPE = 713           # what a module burns per cycle (siege, 
 MODULE_CONSUMPTION_QUANTITY = 714       # units per cycle
 
 
+FIGHTER_TUBES = 2216                # dogma attribute: a hull's fighter tubes
+FIGHTER_SQUADRON_MAX_SIZE = 2215    # dogma attribute: fighters per full squadron
+
+
 class FuelUse(NamedTuple):
     type_id: int
     name: str
@@ -65,6 +69,15 @@ class EVEdbLoader:
     def get_type_name(self, typeid: int) -> str:
         results = self._execute_query("SELECT typeName FROM invTypes WHERE typeID = ?", (typeid,))
         return results[0]['typeName'] if results else "Unknown"
+
+    def get_type_volume(self, typeid: int) -> Optional[float]:
+        """m³ per unit (a ship's assembled volume); None when unknown or the database predates the
+        volume column (built before SDE schema 2: the app offers to rebuild it)."""
+        try:
+            results = self._execute_query("SELECT volume FROM invTypes WHERE typeID = ?", (typeid,))
+        except sqlite3.OperationalError:
+            return None
+        return results[0]["volume"] if results and results[0]["volume"] is not None else None
 
     def get_type_data(self, typeid: int) -> Optional[Dict[str, Any]]:
         results = self._execute_query("SELECT * FROM invTypes WHERE typeID = ?", (typeid,))
@@ -117,6 +130,14 @@ class EVEdbLoader:
         if not fuel_type:
             return None
         return FuelUse(fuel_type, self.get_type_name(fuel_type), values.get(amount_attribute, 0))
+
+    def get_fighter_tubes(self, hull_type_id: int) -> int:
+        """How many fighter tubes the hull has (fighterTubes); 0 for a hull without fighters."""
+        return int(self._attributes(hull_type_id, (FIGHTER_TUBES,)).get(FIGHTER_TUBES) or 0)
+
+    def get_squadron_size(self, type_id: int) -> int:
+        """Fighters in a full squadron (fighterSquadronMaxSize); 1 for anything else."""
+        return int(self._attributes(type_id, (FIGHTER_SQUADRON_MAX_SIZE,)).get(FIGHTER_SQUADRON_MAX_SIZE) or 1)
 
     def get_jump_fuel(self, hull_type_id: int) -> Optional[FuelUse]:
         """The isotope a hull's jump drive burns, with its base use per light year; None without a jump drive."""

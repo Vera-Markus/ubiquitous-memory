@@ -71,7 +71,9 @@ class RelationshipTreeService:
 
             # 5. Get characters assigned to this role
             # The manager uses string representation of UID for lookup
-            chars = role_assignments.get(str(r_uid), [])
+            # Alphabetical by name (UI thoughts 11, plan 17.2), whatever order they were assigned in
+            chars = sorted(role_assignments.get(str(r_uid), []),
+                           key=lambda c: (character_id_to_name.get(c) or c).casefold())
             for char_id in chars:
                 char_name = character_id_to_name.get(char_id) or char_id
                 

@@ -2,8 +2,10 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from app.gui import style as ui_style
+from app.gui.grouped_list import GroupedList
 from app.gui.type_ahead import TypeAhead
 from app.loaders.role_manager import fit_matches_role, fitting_in_use
+from app.services.implant_rules import is_implant_set, set_name
 
 
 class LibraryTab:
@@ -366,8 +368,9 @@ class LibraryTab:
         req_list_container = ttk.Frame(req_frame)
         req_list_container.pack(fill=tk.BOTH, expand=True)
 
-        # exportselection off: picking the replacement in Hull and Fit mustn't clear the selected requirement
-        self.library_req_listbox = tk.Listbox(req_list_container, exportselection=False)
+        # Grouped by system under centred headings (plan 17.6). It keeps its selection while the
+        # replacement is picked in Hull and Fit.
+        self.library_req_listbox = GroupedList(req_list_container)
         self.library_req_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         req_scrollbar = ttk.Scrollbar(req_list_container, orient=tk.VERTICAL, command=self.library_req_listbox.yview)
@@ -609,6 +612,8 @@ class LibraryTab:
         fitting = self.fitting_manager.get_fitting(fit_uid)
         if not fitting:
             return f"[Missing Fitting (UID: {fit_uid})]"
+        if is_implant_set(fitting):
+            return f"Implants: {set_name(fitting)}"
         return f"{fitting.get('hull', 'Unknown')} - {fitting.get('fit_name', fitting.get('fitting', 'Unknown'))}"
 
     def _refresh_library_requirement_list(self, select=None):
@@ -624,12 +629,13 @@ class LibraryTab:
         if not selected_role:
             return
 
+        rows = []
         for req in selected_role.get('requirements', []):
             req_uid = req.get('req_uid', 'Unknown')
             fit_uid = fitting_in_use(req)           # the pilot's replacement, if any (step 11.2)
-            system = self.evedb_loader.get_system_name(req['system_id']) if req.get('system_id') else "<Any System>"
+            system = self.evedb_loader.get_system_name(req['system_id']) if req.get('system_id') else ""
             station = (self.evedb_loader.location_label(req['location_id'], req.get('location_name'))
-                       if req.get('location_id') else "<Any Station>")
+                       if req.get('location_id') else "Any station")
 
             fit_info = self._fit_label(fit_uid)
             if ((self.fitting_manager.get_fitting(fit_uid) if fit_uid else None) or {}).get('doctrine_metadata'):
@@ -642,9 +648,18 @@ class LibraryTab:
             elif req.get('kept'):
                 notes += " (kept)"
 
-            self.library_req_listbox.insert(tk.END, f"{fit_info} | {system} | {station}{notes} (UID: {req_uid})")
+            rows.append((system, station, fit_info, f"{fit_info} · {station}{notes} (UID: {req_uid})", req_uid))
+        # By system (any system last), then station, then fitting, under a heading per system (plan 17.6)
+        rows.sort(key=lambda r: (not r[0], r[0].casefold(), r[1] != "Any station", r[1].casefold(), r[2].casefold()))
+        heading = None
+        for system, _, _, text, req_uid in rows:
+            if system != heading:
+                heading = system
+                self.library_req_listbox.add_heading(system or "Any system")
+                self._req_list_uids.append(None)
+            self.library_req_listbox.insert(tk.END, text)
             self._req_list_uids.append(req_uid)
-        if select in self._req_list_uids:
+        if select is not None and select in self._req_list_uids:
             index = self._req_list_uids.index(select)
             self.library_req_listbox.selection_set(index)
             self.library_req_listbox.see(index)

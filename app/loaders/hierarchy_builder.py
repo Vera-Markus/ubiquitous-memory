@@ -65,7 +65,8 @@ class HierarchyBuilder:
                 is_singleton=item['is_singleton'],
                 character_id=item.get('character_id', 0),
                 name=self.sde.get_type_name(type_id),
-                custom_name=item.get('custom_name')
+                custom_name=item.get('custom_name'),
+                mutated_base=item.get('mutated_base'),
             )
             asset_map[item_id] = asset
         return asset_map

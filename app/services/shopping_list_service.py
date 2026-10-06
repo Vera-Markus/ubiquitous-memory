@@ -19,6 +19,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from app.models.audit_models import AuditResult, ItemShortfall, RequirementResult, RequirementStatus, ShipRequirementResult
 from app.services.audit.expectations import build_expectations
+from app.services.implant_rules import is_implant_set
 from app.models.shopping_list_models import (CharacterShoppingList, DoctrineShoppingList, FleetShoppingList,
                                              ShoppingList, ShoppingListItem)
 
@@ -116,8 +117,13 @@ class ShoppingListService:
     # --- items ----------------------------------------------------------------------------
 
     def items(self, needs: Needs) -> List[ShoppingListItem]:
+        """
+        The needs as list items. Mutated modules never go on a shopping list (decision M4,
+        TRACKED_ITEMS_DESIGN.md §9a): their wanted base and bonuses are shared as text.
+        """
         return sorted((ShoppingListItem(name, quantity, type_id, self.alternatives(type_id))
-                       for type_id, (name, quantity) in needs.items()),
+                       for type_id, (name, quantity) in needs.items()
+                       if not (self.rules is not None and self.rules.is_mutated(type_id))),
                       key=lambda i: i.item_name.casefold())
 
     def alternatives(self, type_id: int) -> List[str]:
@@ -145,21 +151,23 @@ def without_items(items: List[ShoppingListItem], keys) -> List[ShoppingListItem]
     return [item for item in items if item_key(item) not in keys]
 
 
-def fitting_items(fitting: Dict) -> List[ShoppingListItem]:
+def fitting_items(fitting: Dict, is_mutated: Optional[Callable[[int], bool]] = None) -> List[ShoppingListItem]:
     """
     Everything to buy for one ship of a fitting: the hull, every item in its
     EFT (slots, drones, fighters, cargo) and its doctrine requirements' items
     (fleet hangar, fuel bay), summed by type. Ships in the ship maintenance
-    bay and escape bay are left out.
+    bay and escape bay are left out, and so are mutated modules (M4) when
+    is_mutated (SdeRules.is_mutated) is given.
     """
     needs: Needs = {}
     hull = fitting.get("hull")
-    if hull:
+    if hull and not is_implant_set(fitting):        # an implant set's Capsule isn't bought
         needs[fitting.get("hull_type_id") or -1] = (hull, 1)
     for items in build_expectations(fitting).values():
         _merge_need(needs, items)
     return [ShoppingListItem(name, quantity, type_id if type_id != -1 else None)
-            for type_id, (name, quantity) in needs.items()]
+            for type_id, (name, quantity) in needs.items()
+            if not (is_mutated is not None and type_id != -1 and is_mutated(type_id))]
 
 
 def _merge_need(needs: Needs, items) -> None:

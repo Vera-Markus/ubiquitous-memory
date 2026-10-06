@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.models.bay_registry import ESCAPE_BAY
+from app.models.bay_registry import ESCAPE_BAY, SHIP_MAINTENANCE_BAY
 from app.models.doctrine_metadata import DoctrineMetadata, MetadataError, is_doctrine_fit_uid
 
 logger = logging.getLogger(__name__)
@@ -107,21 +107,9 @@ class FittingManager:
     def get_fitting(self, fit_uid: int) -> Optional[Dict[str, Any]]:
         return next((record for record in self.list_fittings() if record.get("fit_uid") == fit_uid), None)
 
-    def find_by_hull(self, hull: str) -> List[Dict[str, Any]]:
-        value = hull.casefold()
-        return [record for record in self.list_fittings() if str(record.get("hull", "")).casefold() == value]
-
     def find_by_fit_name(self, fit_name: str) -> List[Dict[str, Any]]:
         value = fit_name.casefold()
         return [record for record in self.list_fittings() if str(record.get("fit_name", "")).casefold() == value]
-
-    def search_fittings(self, query: str) -> List[Dict[str, Any]]:
-        value = query.casefold()
-        return [
-            record for record in self.list_fittings()
-            if value in str(record.get("hull", "")).casefold()
-            or value in str(record.get("fit_name", "")).casefold()
-        ]
 
     def import_fit(
         self,
@@ -230,9 +218,6 @@ class FittingManager:
             self._data[HIGH_WATER_KEY] = high_water
         self._touch_and_save()
 
-    def get_fitting_names(self) -> List[str]:
-        return [record["fit_name"] for record in self.list_fittings() if record.get("fit_name")]
-
     def _normalize_record(self, fitting_data: Dict[str, Any], source: Optional[str] = None) -> Dict[str, Any]:
         if not isinstance(fitting_data, dict):
             raise TypeError("fitting_data must be a dictionary")
@@ -282,17 +267,19 @@ class FittingManager:
             raise KeyError(f"Fitting UID {fit_uid} not found.")
         cleaned = metadata.normalized()
         problems = cleaned.problems(owner_fit_uid=fit_uid)
-        for requirement in cleaned.requirements(ESCAPE_BAY.key):
-            if requirement.match != "fit" or requirement.fit_uid is None:
-                continue
-            escape = self.get_fitting(requirement.fit_uid)
-            if escape is None:
-                problems.append(f"{ESCAPE_BAY.label}: fitting UID {requirement.fit_uid} doesn't exist")
-            elif requirement.fit_uid == fit_uid:
-                problems.append(f"{ESCAPE_BAY.label}: a fitting can't be its own escape ship")
-            else:
-                requirement.type_id = escape.get("hull_type_id")
-                requirement.name = escape.get("fit_name", requirement.name)
+        for bay in (ESCAPE_BAY, SHIP_MAINTENANCE_BAY):
+            for requirement in cleaned.requirements(bay.key):
+                if requirement.match != "fit" or requirement.fit_uid is None:
+                    continue
+                named = self.get_fitting(requirement.fit_uid)
+                if named is None:
+                    problems.append(f"{bay.label}: fitting UID {requirement.fit_uid} doesn't exist")
+                elif requirement.fit_uid == fit_uid:
+                    problems.append(f"{bay.label}: a fitting can't carry itself" if bay is SHIP_MAINTENANCE_BAY
+                                    else f"{ESCAPE_BAY.label}: a fitting can't be its own escape ship")
+                else:
+                    requirement.type_id = named.get("hull_type_id")
+                    requirement.name = named.get("fit_name", requirement.name)
         if problems:
             raise MetadataError(problems)
 
@@ -313,6 +300,38 @@ class FittingManager:
                    for r in bays.get(ESCAPE_BAY.key) or []):
                 found.append(record["fit_uid"])
         return sorted(found)
+
+    def find_carried_references(self, fit_uid: int) -> List[int]:
+        """UIDs of the fittings whose Ship Maintenance Bay names this one (plan 20.2; the delete confirmation)."""
+        found = []
+        for record in self.list_fittings():
+            bays = (record.get("doctrine_metadata") or {}).get("bays") or {}
+            if any(isinstance(r, dict) and r.get("match") == "fit" and r.get("fit_uid") == fit_uid
+                   for r in bays.get(SHIP_MAINTENANCE_BAY.key) or []):
+                found.append(record["fit_uid"])
+        return sorted(found)
+
+    def list_carried_candidates(self, for_fit_uid: int, capacity: float, sde_loader: Any) -> List[Dict[str, Any]]:
+        """
+        Saved fittings a carrier's Ship Maintenance Bay can name (plan 20.2): ships that fit in the bay
+        (assembled volume, from the SDE; a hull of unknown volume is offered), never the carrier's own
+        fitting, and only doctrine fittings for a doctrine fitting. Sorted by hull, then name.
+        """
+        doctrine_only = is_doctrine_fit_uid(for_fit_uid)
+        candidates = []
+        for record in self.list_fittings():
+            uid = record.get("fit_uid")
+            if uid == for_fit_uid or (doctrine_only and not is_doctrine_fit_uid(uid)):
+                continue
+            hull_type_id = record.get("hull_type_id") or (
+                sde_loader.get_typeid_by_name(record["hull"]) if record.get("hull") else None)
+            if not hull_type_id or sde_loader.get_type_category(hull_type_id) != 6:
+                continue
+            volume = sde_loader.get_type_volume(hull_type_id)
+            if volume is None or volume <= capacity:
+                candidates.append(record)
+        return sorted(candidates, key=lambda r: (str(r.get("hull", "")).casefold(),
+                                                 str(r.get("fit_name", "")).casefold(), r.get("fit_uid")))
 
     def list_escape_candidates(self, for_fit_uid: int, sde_loader: Any) -> List[Dict[str, Any]]:
         """

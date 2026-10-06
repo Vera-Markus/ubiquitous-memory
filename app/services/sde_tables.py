@@ -1,6 +1,6 @@
 """
 What sde_builder writes into data/eve.db, and the checks the result must pass
-(docs/SDE_MIGRATION_PLAN.md, step 9.1).
+(docs/archive/SDE_MIGRATION_PLAN.md, step 9.1).
 
 Table and column names are Fuzzwork's, so the code reading the database doesn't
 change. Only the columns the app, the tests or tools/make_sde_fixture.py read are
@@ -15,7 +15,7 @@ from app.services.sde_builder import (
     INTEGER, REAL, TEXT, DerivedTable, Reader, SdeFormatError, SdeRecord, Table, const, en, english, field, flag, key, value_at,
 )
 
-BUILDER_SCHEMA = 1
+BUILDER_SCHEMA = 2      # 2: invTypes.volume (fuel bay caps, UI thoughts plan 20.1)
 
 TABLES = (
     Table("invCategories", "categories.jsonl", primary_key=("categoryID",), columns={
@@ -38,6 +38,7 @@ TABLES = (
         "groupID": field("groupID"),
         "typeName": en("name"),
         "published": flag("published"),
+        "volume": field("volume", REAL, optional=True),         # m³ per unit (assembled, for ships)
     }),
     # CCP has no metaTypes file: each type names its variation parent (T1 module) itself.
     Table("invMetaTypes", "types.jsonl", primary_key=("typeID",), indexes=(("parentTypeID",),),

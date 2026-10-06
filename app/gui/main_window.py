@@ -5,7 +5,7 @@ import threading
 import asyncio
 from collections import deque
 from datetime import datetime, timedelta
-from app.paths import PROJECT_ROOT, GENERATED_DIR, CONFIG_DIR, EVE_DB_PATH, LOG_DIR, RAW_DIR, AUTH_DIR
+from app.paths import PROJECT_ROOT, GENERATED_DIR, CONFIG_DIR, EVE_DB_PATH, LOG_DIR, RAW_DIR, AUTH_DIR, CLONES_DIR, CORP_DIR
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -22,6 +22,7 @@ from app.loaders.fitting_manager import fittingManager
 from app.esi_service.auth_service import AuthService
 from app.esi_service.esi_settings import ESI_BASE_URL
 from app.esi_service.real_esi_client import RealESIClient
+from app.loaders.ship_designations import ShipDesignations
 from app.esi_service.oauth_config import CLIENT_ID, REDIRECT_URI, SCOPES
 from app.services.export_resolved_locations import save_manual_location, skip_location_prompt, structures_to_name
 from app.services.pull_state_service import AUTO_PULL_INTERVAL_SECONDS, PullStateService
@@ -37,6 +38,7 @@ from app.loaders.package_registry import PackageRegistry
 from app.services.audit_collection_service import AuditCollectionService
 from app.services.audit_engine import AuditEngine
 from app.gui.tabs.audit_tab import AuditTab
+from app.gui.tabs.corp_tab import CorpTab
 from app.gui.package_actions import PackageActions
 from app.gui.tabs.fittings_tab import FittingsTab
 from app.gui.tabs.library_tab import LibraryTab
@@ -86,7 +88,7 @@ class EVEFleetGUI:
         self.asset_pipeline_service = AssetPipelineService(self.auth_service)     # one AuthService (F7)
 
         # Initialize Reset Service
-        self.reset_service = ResetService(PROJECT_ROOT, AUTH_DIR, RAW_DIR, GENERATED_DIR, CONFIG_DIR)
+        self.reset_service = ResetService(PROJECT_ROOT, AUTH_DIR, RAW_DIR, GENERATED_DIR, CONFIG_DIR, CLONES_DIR, CORP_DIR)
 
         # Check for Database existence before loading services that depend on it
         self.bootstrapper = DatabaseBootstrapperService(PROJECT_ROOT)
@@ -147,9 +149,13 @@ class EVEFleetGUI:
         # Initialize Audit Engine
         self.audit_engine = AuditEngine(self.doctrine_manager, self.role_manager, self.fitting_manager, self.evedb_loader)
 
+        # Each ship's fitting and owner (Ships tab): the audit follows assigned ships (UI thoughts 18.3)
+        self.ship_designations = ShipDesignations(GENERATED_DIR / "ship_designations.json")
+        self.asset_pipeline_service.ship_designations = self.ship_designations     # last seen, 30-day expiry
+
         # Characters ▸ Remove Character: login, asset data and assignments
         self.character_removal_service = CharacterRemovalService(
-            self.auth_service, self.doctrine_manager, self.role_manager, RAW_DIR, GENERATED_DIR)
+            self.auth_service, self.doctrine_manager, self.role_manager, RAW_DIR, GENERATED_DIR, CLONES_DIR, CORP_DIR)
 
         # Character name -> id map (written by the Options tab, read by Audit and Library tabs)
         self.library_char_id_map = {}
@@ -332,6 +338,10 @@ class EVEFleetGUI:
             return
         self._log(f"[INFO] Logs exported to {target}")
 
+    def _handle_user_guide(self):
+        from app.gui.dialogs.user_guide import UserGuideWindow
+        UserGuideWindow.show(self.root)
+
     def _setup_menu(self):
         """Sets up the main application menu bar."""
         self.menu_bar = tk.Menu(self.root)
@@ -361,6 +371,12 @@ class EVEFleetGUI:
         self.debug_menu.add_command(label="View Logs", command=self._handle_view_logs)
         self.debug_menu.add_command(label="Export Logs", command=self._handle_export_logs)
 
+        # Help Menu: the user guide (Assets/user_guide.md), also on F1
+        self.help_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
+        self.help_menu.add_command(label="User Guide", accelerator="F1", command=self._handle_user_guide)
+        self.root.bind_all("<F1>", lambda e: self._handle_user_guide())
+
     def _setup_ui(self):
         # Menu Bar
         self._setup_menu()
@@ -372,11 +388,13 @@ class EVEFleetGUI:
         # Tabs
         self.options_tab = ttk.Frame(self.notebook)
         self.audit_tab = ttk.Frame(self.notebook)
+        self.corp_tab = ttk.Frame(self.notebook)
         self.fittings_tab = ttk.Frame(self.notebook)
         self.library_tab = ttk.Frame(self.notebook)
         
         # Add tabs to notebook. Audit comes first, so it's the tab the app opens on.
-        self.notebook.add(self.audit_tab, text="Audit")
+        self.notebook.add(self.audit_tab, text="Doctrines")
+        self.notebook.add(self.corp_tab, text="Ships")
         self.notebook.add(self.library_tab, text="Library")
         self.notebook.add(self.fittings_tab, text="Fittings")
         self.notebook.add(self.options_tab, text="Options")
@@ -388,6 +406,7 @@ class EVEFleetGUI:
         self._setup_options_tab()
         self.fittings_view = FittingsTab(self, self.fittings_tab)
         self.library_view = LibraryTab(self, self.library_tab)
+        self.corp_view = CorpTab(self, self.corp_tab)
 
 
     def _setup_options_tab(self):
@@ -569,11 +588,11 @@ class EVEFleetGUI:
         
         self._log(f"[SUCCESS] Authenticated as: {char_name} ({char_id})")
         
-        # Add to listbox
-        self.character_listbox.insert(tk.END, f"{char_name} ({char_id})")
-
-        # The Library assigns characters from this map (its overview's right-click menu)
+        # The Library assigns characters from this map (its overview's right-click menu). A character
+        # added again (a new login) replaces its old entry rather than appearing twice.
+        self.library_char_id_map = {n: c for n, c in self.library_char_id_map.items() if str(c) != str(char_id)}
         self.library_char_id_map[char_name] = char_id
+        self._redraw_character_listbox()
         self.library_view._update_relationship_tree()
 
         self._set_add_character_enabled(True)
@@ -810,11 +829,12 @@ class EVEFleetGUI:
                                   len(self.doctrine_manager.doctrines))
         if not messagebox.askyesno(title,
                 f"Delete {fits} fitting(s), {roles} role(s) and {doctrines} doctrine(s), with every requirement "
-                "and character assignment, the installed-package records and the remembered export package "
-                "names?\n\nAsset data and logins stay. This can't be undone."):
+                "and character assignment, the ships' assigned fittings, the installed-package records and the "
+                "remembered export package names?\n\nAsset data and logins stay. This can't be undone."):
             return
         counts = self.reset_service.clear_library(self.fitting_manager, self.role_manager, self.doctrine_manager,
-                                                  self.package_registry)
+                                                  self.package_registry,
+                                                  ship_designations=self.ship_designations)
         self._log(f"[INFO] Cleared the library: {counts[0]} fitting(s), {counts[1]} role(s), {counts[2]} doctrine(s).")
         self._refresh_after_library_change()
         messagebox.showinfo(title, "The library was cleared.")
@@ -895,23 +915,18 @@ class EVEFleetGUI:
 
     def _populate_listbox(self, profiles: dict, index: dict):
         """Updates the character listbox and the Library's character map with loaded profiles."""
-        self.character_listbox.delete(0, tk.END)
-        
-        self.library_char_id_map = {}
-
-        for char_id, profile in profiles.items():
-            name = index.get(char_id, f"Unknown ({char_id})")
-            display_text = f"{name} ({char_id})"
-            
-            # Options tab
-            self.character_listbox.insert(tk.END, display_text)
-            
-            # The Library assigns characters from this map
-            self.library_char_id_map[name] = char_id
-            
+        # The Library assigns characters from this map
+        self.library_char_id_map = {index.get(char_id, f"Unknown ({char_id})"): char_id for char_id in profiles}
+        self._redraw_character_listbox()
         self.library_view._update_relationship_tree()
 
         self._log(f"[SUCCESS] Loaded {len(profiles)} characters.")
+
+    def _redraw_character_listbox(self):
+        """The Options tab's characters, alphabetical (UI thoughts 11, plan 17.2)."""
+        self.character_listbox.delete(0, tk.END)
+        for name, char_id in sorted(self.library_char_id_map.items(), key=lambda c: c[0].casefold()):
+            self.character_listbox.insert(tk.END, f"{name} ({char_id})")
 
     def _populate_audit_doctrine_combo(self):
         """Cross-tab refresh: doctrine changes update the Audit tab selector."""

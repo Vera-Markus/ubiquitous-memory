@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 @dataclass
 class Asset:
@@ -13,6 +13,7 @@ class Asset:
     name: str = ""
     custom_name: Optional[str] = None
     fitting: Optional['Fitting'] = None
+    mutated_base: Optional[int] = None      # a mutated item's base module, once known (plan 12.2)
 
 @dataclass
 class Fitting:
@@ -71,3 +72,4 @@ class AuditSnapshot:
     stations: List[int]
     assigned_role_uids: List[int]
     carried_ships: List[CarriedShip] = field(default_factory=list)   # filled from step 1.7
+    clones: Optional[Dict[str, Any]] = None     # data/clones/<id>.json; None when not pulled (plan 15.2)

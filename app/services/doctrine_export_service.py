@@ -72,6 +72,18 @@ def escape_fit_uids(fitting: Dict[str, Any]) -> List[int]:
             if isinstance(r, dict) and r.get("match") == "fit" and r.get("fit_uid") is not None]
 
 
+def carried_fit_uids(fitting: Dict[str, Any]) -> List[int]:
+    """Fittings this one's Ship Maintenance Bay names (UI thoughts plan 20.2)."""
+    bays = (fitting.get("doctrine_metadata") or {}).get("bays") or {}
+    return [r["fit_uid"] for r in bays.get("ship_maintenance_bay") or []
+            if isinstance(r, dict) and r.get("match") == "fit" and r.get("fit_uid") is not None]
+
+
+def linked_fit_uids(fitting: Dict[str, Any]) -> List[int]:
+    """Every fitting this one names: its escape ship and the ships it carries."""
+    return list(dict.fromkeys(escape_fit_uids(fitting) + carried_fit_uids(fitting)))
+
+
 class DoctrineExportService:
     def __init__(self, fitting_manager: Any, role_manager: Any, doctrine_manager: Any):
         self.fittings = fitting_manager
@@ -99,7 +111,7 @@ class DoctrineExportService:
             found.add(uid)
             fitting = self.fittings.get_fitting(uid)
             if fitting:
-                todo.extend(escape_fit_uids(fitting))
+                todo.extend(linked_fit_uids(fitting))
         return found
 
     def default_selection(self, doctrine_uids, include_assignments: bool = False) -> ExportSelection:
@@ -122,12 +134,14 @@ class DoctrineExportService:
         nodes: List[TreeNode] = []
         reached_roles, reached_fits = set(), set()
 
-        def fit_node(uid, escape=False):
+        def fit_node(uid, link=""):
             fitting = self.fittings.get_fitting(uid)
             label = fitting["fit_name"] if fitting else f"Missing fitting {uid}"
             reached_fits.add(uid)
-            children = [fit_node(e, escape=True) for e in escape_fit_uids(fitting or {})]
-            return TreeNode("fit", uid, label + (" (escape fit)" if escape else ""), children)
+            escapes = escape_fit_uids(fitting or {})
+            children = [fit_node(e, " (escape fit)" if e in escapes else " (carried fit)")
+                        for e in linked_fit_uids(fitting or {}) if e != uid and e not in reached_fits]
+            return TreeNode("fit", uid, label + link, children)
 
         def role_node(uid):
             role = self.roles.get_role(uid)
@@ -263,6 +277,10 @@ class DoctrineExportService:
                 if escape_uid not in selection.fit_uids:
                     problems.append(f"The {self._name('fit', fit_uid)} recommends the {self._name('fit', escape_uid)} "
                                     f"as its escape ship, which isn't selected.")
+            for carried_uid in carried_fit_uids(fitting or {}):
+                if carried_uid not in selection.fit_uids and carried_uid not in escape_fit_uids(fitting or {}):
+                    problems.append(f"The {self._name('fit', fit_uid)} carries the {self._name('fit', carried_uid)} "
+                                    f"in its Ship Maintenance Bay, which isn't selected.")
         return problems
 
     # --- the package ---------------------------------------------------------------------

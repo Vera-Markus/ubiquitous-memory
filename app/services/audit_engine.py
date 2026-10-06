@@ -10,6 +10,14 @@ asked two questions:
 
 The parts live in app/services/audit/; this class finds the ships and puts
 the answers together.
+
+Assigned ships (UI_THOUGHTS_PLAN.md 18.3, replacing Phase 14's bindings): with a
+TrackingContext (the app always passes one), a requirement's ships are those the character
+owns that are assigned its fitting in the Ships tab, followed by item ID wherever they are
+(another linked character, a corporation hangar, aboard another ship): HOME, AWAY or
+MISSING. Nothing is ever assigned automatically; an unassigned hull at the place makes the
+requirement NOT CHECKED. Without a context (tools, older tests) every hull of the type at
+the place is audited, as before assignments existed.
 """
 import logging
 from typing import Any, Dict, List, Optional
@@ -17,15 +25,17 @@ from typing import Any, Dict, List, Optional
 from app.loaders.role_manager import fitting_in_use
 from app.loaders.sde_rules import SdeRules
 from app.models.asset_models import AuditSnapshot, ShipAsset
-from app.models.audit_models import (AuditResult, ItemShortfall, PackedShipWarning, RequirementResult, RequirementStatus,
+from app.models.audit_models import (AuditResult, EftItem, ItemShortfall, PackedShipWarning, RequirementResult, RequirementStatus,
                                      ShipRequirementResult)
 from app.services.audit.bays import BayContext, escape_covered_carriers, evaluate_bays
 from app.services.audit.carried import Expected, check_carried_ships, pooled
-from app.services.audit.configuration import evaluate_configuration
-from app.services.audit.expectations import SLOT_LOCATIONS, Expectations, build_expectations
+from app.services.audit.configuration import evaluate_configuration, strict_locations
+from app.services.audit.expectations import FIGHTER_TUBES, Expectations, build_expectations
 from app.models.bay_registry import BAYS, CATEGORY_SHIP
 from app.services.audit.inventory import evaluate_inventory, items_aboard
 from app.services.audit.ranking import listing_order, requirement_status, ship_status
+from app.services.implant_audit import ImplantNeed, audit_implants
+from app.services.implant_rules import is_implant_set
 
 logger = logging.getLogger("AuditEngine")
 
@@ -50,17 +60,28 @@ class AuditEngine:
             self._rules = SdeRules(self.evedb_loader.db_path)
         return self._rules
 
-    def audit(self, snapshot: AuditSnapshot) -> List[AuditResult]:
+    def audit(self, snapshot: AuditSnapshot, tracking: Optional[Any] = None) -> List[AuditResult]:
         """
         Performs a full audit of all assigned roles for the character in the snapshot.
+        With a TrackingContext, requirements follow their bound ships (plan 14.3).
         """
         results = []
+        implant_sets = self._audit_implant_sets(snapshot)
+        # Where each fitting is needed across the character's roles: a ship at another of those places
+        # serves that requirement, so it isn't also offered as away for this one (as D2 did for bindings).
+        self._homes: Dict[int, List[tuple]] = {}
+        for role_uid in snapshot.assigned_role_uids:
+            for req in (self.role_manager.get_role(role_uid) or {}).get('requirements', []):
+                self._homes.setdefault(fitting_in_use(req), []).append(
+                    (req['req_uid'], req.get('system_id'), req.get('location_id')))
         for role_uid in snapshot.assigned_role_uids:
             role_data = self.role_manager.get_role(role_uid)
             if not role_data:
                 continue
             doctrine_info = self._get_doctrine_info(role_uid)
-            results.append(self._audit_role(snapshot, role_data, doctrine_info))
+            results.append(self._audit_role(snapshot, role_data, doctrine_info, tracking, implant_sets))
+        if tracking is not None and tracking.designations is not None:
+            tracking.designations.save()            # where each assigned ship was seen
         logger.debug(f"Audited {len(results)} role(s) for character {snapshot.character_id}")
         return results
 
@@ -71,8 +92,54 @@ class AuditEngine:
         What each carrier's matched fittings ask for is exempt.
         """
         fittings_by_carrier = self._fittings_by_carrier(results or [])
+        ships = {s.asset.item_id: s for s in snapshot.ships}
+        checked: Dict[tuple, Optional[tuple]] = {}
+
+        def fit_check(carried, fit_uid):
+            """None when the carried ship matches the saved fitting (a deleted fitting accepts any)."""
+            if (carried.item_id, fit_uid) not in checked:
+                checked[(carried.item_id, fit_uid)] = self._carried_fit_difference(ships.get(carried.item_id), fit_uid)
+            return checked[(carried.item_id, fit_uid)]
+
         return check_carried_ships(snapshot, results or [], self._expected_carried(fittings_by_carrier),
-                                   escape_covered_carriers(fittings_by_carrier))
+                                   escape_covered_carriers(fittings_by_carrier),
+                                   self._carried_fit_entries(fittings_by_carrier), fit_check)
+
+    def _carried_fit_entries(self, fittings_by_carrier: Dict[int, List[Dict[str, Any]]]) -> Dict[tuple, list]:
+        """(carrier, hull) -> its maintenance bay entries (fit_uid or None, quantity), from the fitting
+        asking for the most of that hull (as _expected_carried does)."""
+        found: Dict[tuple, list] = {}
+        for carrier, fittings in fittings_by_carrier.items():
+            for fitting in fittings:
+                entries: Dict[int, list] = {}
+                for r in ((fitting.get("doctrine_metadata") or {}).get("bays") or {}).get("ship_maintenance_bay") or []:
+                    if isinstance(r, dict) and r.get("type_id") and (r.get("match") or "type") in ("type", "fit"):
+                        uid = r.get("fit_uid") if r.get("match") == "fit" else None
+                        entries.setdefault(int(r["type_id"]), []).append((uid, int(r.get("min_quantity", 1) or 0)))
+                for type_id, listed in entries.items():
+                    key = (carrier, type_id)
+                    if sum(q for _, q in listed) > sum(q for _, q in found.get(key, [])):
+                        found[key] = listed
+        return found
+
+    def _carried_fit_difference(self, ship: Optional[ShipAsset], fit_uid: int) -> Optional[tuple]:
+        """(fitting name, what differs) when a carried ship doesn't match a saved fitting; None when it does."""
+        fitting = self.fitting_manager.get_fitting(fit_uid)
+        if fitting is None:
+            return None
+        name = fitting.get("fit_name", f"fitting {fit_uid}")
+        if ship is None:
+            return name, "packaged"
+        result = self._evaluate_ship(ship, build_expectations(fitting, self.rules.squadron_size), fitting)
+        if result.status == RequirementStatus.PASS:
+            return None
+        if result.shortfalls:
+            missing = [f"{s.missing}× {s.name}" for s in result.shortfalls[:3]]
+            more = len(result.shortfalls) - 3
+            return name, "missing " + ", ".join(missing) + (f" and {more} more" if more > 0 else "")
+        if result.status == RequirementStatus.WARN:
+            return None                     # a refit or bling: still that fitting, as for any ship
+        return name, "doesn't match"
 
     def _fittings_by_carrier(self, results: List[AuditResult]) -> Dict[int, List[Dict[str, Any]]]:
         """Each audited ship's matched fittings (a ship can match requirements in several roles, D14)."""
@@ -102,7 +169,7 @@ class AuditEngine:
                         continue
                     totals: Dict[int, int] = {}
                     for r in requirements or []:
-                        if isinstance(r, dict) and r.get("type_id") and (r.get("match") or "type") == "type":
+                        if isinstance(r, dict) and r.get("type_id") and (r.get("match") or "type") in ("type", "fit"):
                             totals[int(r["type_id"])] = totals.get(int(r["type_id"]), 0) + int(r.get("min_quantity", 1) or 0)
                     for type_id, quantity in totals.items():
                         if bay_key != "ship_maintenance_bay" and self.rules.category(type_id) != CATEGORY_SHIP:
@@ -123,17 +190,45 @@ class AuditEngine:
             }
         return {}
 
-    def _audit_role(self, snapshot: AuditSnapshot, role_data: Dict[str, Any], doctrine_info: Dict[str, Any]) -> AuditResult:
+    def _audit_implant_sets(self, snapshot: AuditSnapshot) -> Dict[Any, RequirementResult]:
         """
-        Audits a single role.
+        Every implant set requirement in the character's roles (Capsule fittings, D5), matched to
+        their clones together: each clone covers one requirement across all roles (D7, plan 15.2).
         """
+        needs = []
+        for role_uid in sorted(snapshot.assigned_role_uids):
+            for req in (self.role_manager.get_role(role_uid) or {}).get('requirements', []):
+                fitting = self.fitting_manager.get_fitting(fitting_in_use(req))
+                if is_implant_set(fitting):
+                    needs.append(ImplantNeed((role_uid, req['req_uid']), req, fitting))
+        if not needs:
+            return {}
+        return audit_implants(needs, snapshot.clones, self.rules, self._system_of,
+                              lambda location_id: self.evedb_loader.location_label(location_id))
+
+    def _audit_role(self, snapshot: AuditSnapshot, role_data: Dict[str, Any], doctrine_info: Dict[str, Any],
+                    tracking: Optional[Any] = None,
+                    implant_sets: Optional[Dict[Any, RequirementResult]] = None) -> AuditResult:
+        """
+        Audits a single role. Implant set requirements come already matched to clones.
+        """
+        implant_sets = implant_sets or {}
+        requirements = []
+        for req in role_data.get('requirements', []):
+            key = (role_data['role_uid'], req['req_uid'])
+            if key in implant_sets:
+                requirements.append(implant_sets[key])
+            elif tracking is not None:
+                requirements.append(self._evaluate_assigned(snapshot, req, tracking))
+            else:
+                requirements.append(self._evaluate_requirement(snapshot, req))
         return AuditResult(
             character_id=snapshot.character_id,
             role_uid=role_data['role_uid'],
             role_name=role_data['role_name'],
             doctrine_uid=doctrine_info.get("uid"),
             doctrine_name=doctrine_info.get("name"),
-            requirement_results=[self._evaluate_requirement(snapshot, req) for req in role_data.get('requirements', [])],
+            requirement_results=requirements,
         )
 
     # --- one requirement -----------------------------------------------------------------
@@ -168,7 +263,7 @@ class AuditEngine:
                                      shortfalls=self._replacement(fitting, hull_type_id),
                                      message=f"No {hull} in {where}" if where else f"No {hull} found")
 
-        expectations = build_expectations(fitting)
+        expectations = build_expectations(fitting, self.rules.squadron_size)
         context = BayContext(carried=list(snapshot.carried_ships),
                              ships_by_item={s.asset.item_id: s for s in snapshot.ships},
                              get_fitting=self.fitting_manager.get_fitting)
@@ -180,6 +275,98 @@ class AuditEngine:
             requirement_details=requirement,
             ship_results=results,
         )
+
+    def _evaluate_assigned(self, snapshot: AuditSnapshot, requirement: Dict[str, Any],
+                           tracking: Any) -> RequirementResult:
+        """
+        The requirement with the ships assigned to it (UI thoughts plan 18.3; A1-A4): ships the
+        character owns that are assigned the fitting in use, followed by item ID wherever they
+        are. At the requirement's place: audited, best first (the requirement takes the best,
+        A3). Elsewhere: AWAY (WARN, ready unless its fit fails, D1). Found nowhere: MISSING
+        (FAIL, last seen, the replacement on its row, D10). Corporation-owned ships never count
+        for a character (U5). With none assigned but an unassigned hull of the type held by the
+        character at the place: NOT CHECKED (A4), offering to assign it.
+        """
+        req_uid = requirement['req_uid']
+        fit_uid = fitting_in_use(requirement)
+        replaced = fit_uid != requirement['fit_uid']
+        system_id, location_id = requirement.get('system_id'), requirement.get('location_id')
+        fitting = self.fitting_manager.get_fitting(fit_uid)
+        if fitting is None:
+            return self._evaluate_requirement(snapshot, requirement)       # the "no longer exists" failure
+        hull_type_id = (None if replaced else requirement.get('expected_hull_type_id')) or fitting.get('hull_type_id')
+        owner = {"kind": "character", "id": int(snapshot.character_id)}
+        universe, designations = tracking.universe, tracking.designations
+
+        expectations = build_expectations(fitting, self.rules.squadron_size)
+        own_ships = {s.asset.item_id: s for s in snapshot.ships}
+        own_context = BayContext(carried=list(snapshot.carried_ships), ships_by_item=own_ships,
+                                 get_fitting=self.fitting_manager.get_fitting)
+        home, away, missing = [], [], []
+        for d in designations.assigned_to(fit_uid, owner) if designations is not None else []:
+            sighting = universe.find(d["item_id"])
+            if sighting is not None and universe.is_ship(sighting) and not universe.at(sighting, system_id, location_id) \
+                    and any(universe.at(sighting, s, l) for r, s, l in getattr(self, "_homes", {}).get(fit_uid, [])
+                            if r != req_uid):
+                continue            # at the place of another requirement for this fitting: it serves that one
+            if sighting is not None and universe.is_ship(sighting):
+                if sighting.holder == {"kind": "character", "id": owner["id"]} and d["item_id"] in own_ships:
+                    ship, context = own_ships[d["item_id"]], own_context
+                else:
+                    ship, carried, ships = tracking.ships_of(sighting)
+                    context = BayContext(carried=carried, ships_by_item=ships, get_fitting=self.fitting_manager.get_fitting)
+                if ship is not None:
+                    result = self._evaluate_ship(ship, expectations, fitting, context)
+                    result.bound = True
+                    result.holder = tracking.holder_info(sighting)
+                    result.where = tracking.where(sighting)
+                    designations.record_sighting(d["item_id"], result.where, result.holder)
+                    if universe.at(sighting, system_id, location_id):
+                        result.placement = "HOME"
+                        home.append(result)
+                    else:
+                        result.placement = "AWAY"
+                        away.append(result)
+                    continue
+            last = {"where": d.get("seen_where", ""), "holder": d.get("seen_holder")}
+            missing.append(ShipRequirementResult(
+                ship_name=fitting.get('hull') or "ship", status=RequirementStatus.FAIL,
+                custom_name=d.get("custom_name") or None, ship_item_id=d["item_id"], placement="MISSING",
+                bound=True, holder=last["holder"], where=last["where"], last_seen=last if last["where"] else None,
+                missing_since=d.get("last_seen"), shortfalls=self._replacement(fitting, hull_type_id)))
+
+        home, away = listing_order(home), listing_order(away)
+        results = home + away + missing
+        message, shortfalls = None, []
+        if home:
+            status = requirement_status(home)
+        elif away:
+            status = RequirementStatus.FAIL if away[0].status == RequirementStatus.FAIL else RequirementStatus.WARN
+        elif missing:
+            status = RequirementStatus.FAIL
+            shortfalls = self._replacement(fitting, hull_type_id)
+            since = missing[0].missing_since or ""
+            message = f"Missing since {since[:10]}" + (f": last seen {missing[0].where}" if missing[0].where else "")
+        else:
+            unassigned = [s for s in snapshot.ships
+                          if s.asset.type_id == hull_type_id and self._location_matches(s, system_id, location_id)
+                          and (designations is None or designations.get(s.asset.item_id) is None)]
+            where = (self.evedb_loader.location_label(location_id, requirement.get('location_name')) if location_id
+                     else self.evedb_loader.get_system_name(system_id) if system_id else "")
+            hull = fitting.get('hull') or "ship"
+            if not unassigned:
+                return RequirementResult(req_uid=req_uid, status=RequirementStatus.FAIL, requirement_details=requirement,
+                                         shortfalls=self._replacement(fitting, hull_type_id),
+                                         message=f"No {hull} in {where}" if where else f"No {hull} found")
+            count = f"{len(unassigned)} {hull}s" if len(unassigned) > 1 else hull
+            return RequirementResult(
+                req_uid=req_uid, status=RequirementStatus.NOT_CHECKED, requirement_details=requirement,
+                message=f"{count}{' at ' + where if where else ''} with no fitting assigned: not checked",
+                unassigned_hulls=[{"item_id": s.asset.item_id, "type_id": s.asset.type_id,
+                                   "custom_name": s.asset.custom_name or "", "fit_uid": fit_uid,
+                                   "fit_name": fitting.get('fit_name', '')} for s in unassigned])
+        return RequirementResult(req_uid=req_uid, status=status, requirement_details=requirement,
+                                 ship_results=results, message=message, shortfalls=shortfalls)
 
     @staticmethod
     def _replacement(fitting: Dict[str, Any], hull_type_id: Optional[int]) -> List[ItemShortfall]:
@@ -204,13 +391,18 @@ class AuditEngine:
 
     # --- one ship ------------------------------------------------------------------------
 
+    def audit_ship(self, ship: ShipAsset, fitting: Dict[str, Any], context: Optional[BayContext] = None) -> ShipRequirementResult:
+        """One ship against one fitting: both questions and the bays (the Ships tab, plan 16.2)."""
+        return self._evaluate_ship(ship, build_expectations(fitting, self.rules.squadron_size), fitting, context)
+
     def _evaluate_ship(self, ship: ShipAsset, expectations: Expectations, fitting: Optional[Dict[str, Any]] = None,
                        context: Optional[BayContext] = None) -> ShipRequirementResult:
-        aboard = items_aboard(ship, self.rules)
+        aboard = items_aboard(ship, self.rules, split_tubes=FIGHTER_TUBES in expectations)
         inventory = evaluate_inventory(expectations, aboard, self.rules)
         moves = evaluate_configuration(expectations, aboard, inventory, self.rules)
-        # A fitted item the fitting doesn't call for appears as an "unfit" move, not here.
-        unexpected = [name for location, _, name, _ in inventory.unexpected if location not in SLOT_LOCATIONS]
+        # A fitted item the fitting doesn't call for appears as a "remove" move, not here.
+        strict = strict_locations(expectations)
+        unexpected = [name for location, _, name, _ in inventory.unexpected if location not in strict]
 
         result = ShipRequirementResult(
             ship_name=ship.asset.name,
@@ -224,6 +416,12 @@ class AuditEngine:
             refit_moves=moves,
             substitutions=inventory.substitutions,
             bay_results=evaluate_bays(ship, fitting or {}, inventory, moves, context or BayContext(), self.rules),
+            contents=[EftItem(i.location, i.type_id, self.rules.equivalence_key(i.type_id), i.name, i.quantity)
+                      for i in aboard],
+            expected=[EftItem(location, item.type_id, self.rules.equivalence_key(item.type_id), item.name, item.quantity)
+                      for location, items in expectations.items() for item in items.values()],
+            unexpected_aboard=[EftItem(location, type_id, self.rules.equivalence_key(type_id), name, quantity)
+                               for location, type_id, name, quantity in inventory.unexpected],
         )
         result.status = ship_status(result)
         return result

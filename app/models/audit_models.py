@@ -8,6 +8,7 @@ class RequirementStatus(Enum):
     PASS = "PASS"
     WARN = "WARN"   # ready, but needs attention: refit, substitute, unexpected item, still packed
     FAIL = "FAIL"
+    NOT_CHECKED = "NOT_CHECKED"     # a hull is there but has no fitting assigned: not ready, not a failure (A4)
 
 
 def is_ready(status: "RequirementStatus") -> bool:
@@ -65,10 +66,23 @@ class BayResult:
 
 
 @dataclass
+class EftItem:
+    """An item aboard, or one the fitting expects, at one location (the EFT view, plan 19.2)."""
+    location: str           # "high", "mid", "low", "rigs", "subsystem", "drones", "fighters", "cargo", "fuel_bay"
+    type_id: int
+    key: int                # the equivalence key the audit counted it by
+    name: str
+    quantity: int
+
+
+@dataclass
 class PackedShipWarning:
-    """A ship still packed inside a carrier that the carrier's metadata doesn't call for (design §9.5)."""
+    """A ship still packed inside a carrier that the carrier's metadata doesn't call for (design §9.5),
+    or one it calls for with a saved fitting that the ship doesn't match (plan 20.2, U10)."""
     ship: CarriedShip
-    reason: Literal["not_in_metadata", "exceeds_requirement"]
+    reason: Literal["not_in_metadata", "exceeds_requirement", "wrong_fit"]
+    fit_name: str = ""          # wrong_fit: the fitting the carrier's maintenance bay names
+    detail: str = ""            # wrong_fit: "missing 2× Small Remote Armor Repairer II", "packaged"
 
 @dataclass
 class ShipRequirementResult:
@@ -87,6 +101,41 @@ class ShipRequirementResult:
     refit_moves: List[RefitMove] = field(default_factory=list)
     substitutions: List[Substitution] = field(default_factory=list)
     bay_results: List[BayResult] = field(default_factory=list)
+    # Assigned ships (UI thoughts plan 18.3). Without a tracking context every ship is UNBOUND.
+    placement: str = "UNBOUND"                  # HOME, AWAY, MISSING, or UNBOUND (no assignments known)
+    bound: bool = False                         # assigned this requirement's fitting and owned by the character
+    holder: Optional[Dict[str, Any]] = None     # {"kind": "character"|"corporation", "id", "name"}
+    where: str = ""                             # "Jita IV - Moon 4 - Caldari Navy Assembly Plant (deliveries)"
+    last_seen: Optional[Dict[str, Any]] = None  # a missing ship's last sighting
+    missing_since: Optional[str] = None
+    # What the audit compared, for the EFT view (plan 19.2): aboard, expected, and what aboard
+    # the fitting doesn't call for at all.
+    contents: List[EftItem] = field(default_factory=list)
+    expected: List[EftItem] = field(default_factory=list)
+    unexpected_aboard: List[EftItem] = field(default_factory=list)
+
+@dataclass
+class ImplantSlotResult:
+    """One implant slot of a set checked against a clone (TRACKED_ITEMS_DESIGN.md §5.3)."""
+    slot: int
+    status: RequirementStatus
+    listed_type_id: Optional[int] = None
+    listed_name: str = ""
+    worn_type_id: Optional[int] = None
+    worn_name: str = ""
+    reason: str = ""                    # "HG-1008 preferred", "check by hand", "empty", "Mid-grade Amulet Alpha"
+
+
+@dataclass
+class ImplantSetResult:
+    """An implant set requirement matched to a clone (TRACKED_ITEMS_DESIGN.md §9, plan 15.2)."""
+    set_name: str                       # "High-Grade Amulets"
+    placement: str                      # HOME, IN USE, AWAY, MISSING, or UNKNOWN (no clone data)
+    status: RequirementStatus
+    clone: str = ""                     # "jump clone", "active clone"; for MISSING, the closest one checked
+    where: str = ""                     # the jump clone's station or structure
+    slots: List[ImplantSlotResult] = field(default_factory=list)
+
 
 @dataclass
 class RequirementResult:
@@ -102,6 +151,11 @@ class RequirementResult:
     # When no ship could be audited: everything a replacement needs (the hull, its fitting and
     # metadata), offered to the shopping list from this requirement's row only.
     shortfalls: List[ItemShortfall] = field(default_factory=list)
+    # NOT CHECKED: the character's hulls at the place with no fitting assigned, offered for
+    # assigning from the requirement's row ({item_id, type_id, custom_name, fit_uid, fit_name}).
+    unassigned_hulls: List[Dict[str, Any]] = field(default_factory=list)
+    # An implant set requirement (a Capsule fitting) has no ships: its clone match instead.
+    implant_set: Optional[ImplantSetResult] = None
 
     @property
     def ships_listed(self) -> int:

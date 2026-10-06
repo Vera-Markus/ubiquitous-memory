@@ -9,17 +9,20 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.models.asset_models import CarriedShip
-from app.models.audit_models import (AuditResult, BayResult, PackedShipWarning, RefitMove, RequirementResult,
-                                     RequirementStatus, ShipRequirementResult)
+from app.models.audit_models import (AuditResult, BayResult, ImplantSlotResult, PackedShipWarning, RefitMove,
+                                     RequirementResult, RequirementStatus, ShipRequirementResult)
 from app.models.bay_registry import BAYS
+from app.services.audit.configuration import REMOVE
 
-ICONS = {RequirementStatus.PASS: "✅", RequirementStatus.WARN: "⚠", RequirementStatus.FAIL: "❌"}
+ICONS = {RequirementStatus.PASS: "✅", RequirementStatus.WARN: "⚠", RequirementStatus.FAIL: "❌",
+         RequirementStatus.NOT_CHECKED: "⚪"}         # a hull with no fitting assigned (A4)
 ESCAPE_BAY_KEY = "escape_bay"
 NOT_AUDITED = "📋"
 MISSING_ITEMS = "missing_items"     # tree values tag for the node "Add Missing Items to Shopping List" reads
 
 SLOT_LABELS = {"subsystem": "subsystems", "high": "high slots", "mid": "mid slots", "low": "low slots", "rigs": "rigs"}
-SPACE_LABELS = {"cargo": "cargo", "drones": "drone bay", "fighters": "fighter bay", "fuel_bay": "fuel bay",
+SPACE_LABELS = {"cargo": "cargo", "drones": "drone bay", "fighters": "fighter bay", "fighter_tubes": "fighter tubes",
+                "fuel_bay": "fuel bay",
                 "fleet_hangar": "fleet hangar"}
 
 
@@ -66,8 +69,10 @@ def move_text(move: RefitMove) -> str:
     destination = SPACE_LABELS.get(move.to_location)
     if move.to_location in SLOT_LABELS and source:
         return f"Fit {quantity} (in {source})"
+    if move.to_location == REMOVE:
+        return f"Remove {quantity} ({SLOT_LABELS.get(move.from_location) or SPACE_LABELS.get(move.from_location, move.from_location)})"
     if move.from_location in SLOT_LABELS and destination:
-        return f"Unfit {quantity} (to {destination})"
+        return f"Stow {quantity} (to {destination})"
     where = lambda loc: SLOT_LABELS.get(loc) or SPACE_LABELS.get(loc) or loc
     return f"Move {quantity} from {where(move.from_location)} to {where(move.to_location)}"
 
@@ -117,14 +122,44 @@ def bay_node(bay: BayResult) -> Node:
     return Node(f"{icon} {bay_label(bay.bay_key)}", children)
 
 
+def placement_text(ship: ShipRequirementResult) -> str:
+    """What a bound ship's row adds after its name (tracked ships, plan 14.4); nothing for spares."""
+    if not ship.bound:
+        return ""
+    holder = (ship.holder or {}).get("name", "")
+    if ship.placement == "HOME":
+        corporation = (ship.holder or {}).get("kind") == "corporation"
+        return " · 📌 Home" + (f" ({holder})" if corporation and holder else "")
+    if ship.placement == "AWAY":
+        return " · ↗ Away: " + ", ".join(p for p in (holder, ship.where) if p)
+    if ship.placement == "MISSING":
+        return f" · ❓ Missing since {(ship.missing_since or '')[:10]}"
+    return ""
+
+
 def ship_node(ship: ShipRequirementResult, packed: Dict[int, CarriedShip], where: str = "", notes: str = "",
               fit_name: str = "") -> Node:
     children: List[Node] = []
+    if ship.placement == "MISSING":
+        last = ship.last_seen or {}
+        seen = f"Last seen {last.get('where')}" if last.get("where") else "Not seen since it was bound"
+        if (last.get("holder") or {}).get("name"):
+            seen += f", held by {last['holder']['name']}"
+        children.append(Node(f"❓ {seen}"))
+        children.append(Node("❌ Replacement (add by hand)",
+                             [Node(f"{s.name} (Missing {s.missing})") for s in ship.shortfalls],
+                             values=(MISSING_ITEMS,)))
+        label = f"{ICONS[ship.status]} {ship.custom_name or ship.ship_name}" + (f" - {fit_name}" if fit_name else "")
+        return Node(label + placement_text(ship), children, data=ship)
     # Fuel has its own row (the Fuel Bay), so it isn't repeated under Missing Items or the refit.
     fuel = bay_result(ship, "fuel_bay")
     fuel_types = {c.type_id for c in fuel.counts} if fuel else set()
     shortfalls = [s for s in ship.shortfalls if s.type_id not in fuel_types]
     moves = [m for m in ship.refit_moves if m.to_location != "fuel_bay"]
+    # Fitted modules the fitting doesn't want go in one Remove list with the unexpected items
+    # (plan 17.4); a subsystem stays with the subsystem reconfiguration it belongs to.
+    removals = [m for m in moves if m.to_location == REMOVE and m.from_location != "subsystem"]
+    moves = [m for m in moves if m not in removals]
     if shortfalls:
         children.append(Node(f"{ICONS[RequirementStatus.FAIL]} Missing Items",
                              [Node(f"{s.name} (Missing {s.missing})") for s in shortfalls],
@@ -136,8 +171,9 @@ def ship_node(ship: ShipRequirementResult, packed: Dict[int, CarriedShip], where
         children.append(Node("⚠ Bling", [
             Node(f"{s.fitted_name} fitted instead of {s.expected_name}" + (f" (×{s.quantity})" if s.quantity > 1 else ""))
             for s in ship.substitutions]))
-    if ship.unexpected_items:
-        children.append(Node("⚠ Unexpected Items", [Node(text) for text in counted(ship.unexpected_items)]))
+    if removals or ship.unexpected_items:
+        children.append(Node("⚠ Remove from ship", [Node(move_text(m)) for m in removals]
+                             + [Node(text) for text in counted(ship.unexpected_items)]))
     carried = packed.get(ship.ship_item_id) if ship.ship_item_id is not None else None
     if carried is not None:
         children.append(Node(f"📦 Packed in {named(carried.carrier_name, carried.carrier_custom_name)} · "
@@ -147,7 +183,9 @@ def ship_node(ship: ShipRequirementResult, packed: Dict[int, CarriedShip], where
         children.append(Node(f"📝 {notes.strip()}"))
     # The ship's own name (or its hull when it has none), then the fitting it's audited against
     label = f"{ICONS[ship.status]} {ship.custom_name or ship.ship_name}" + (f" - {fit_name}" if fit_name else "")
-    return Node(label + where, children, data=ship)
+    if ship.placement == "AWAY":
+        where = ""                          # the placement says where it is
+    return Node(label + where + placement_text(ship), children, data=ship)
 
 
 # --- one requirement -------------------------------------------------------------------------
@@ -163,15 +201,41 @@ def requirement_node(requirement: dict, hull: str, result: Optional[RequirementR
     text = f"{hull}{where}" + (f" (replacing {replacing})" if replacing else "")
     if result is None:
         return Node(f"{NOT_AUDITED} {text}")
+    if result.implant_set is not None:
+        return implant_set_node(text, result)
     if not result.ship_results:
         reason = result.message or "No ship found"
-        # The requirement row carries its result, so the shopping list can offer the missing hull.
-        return Node(f"{ICONS[result.status]} {text}", [Node(f"{ICONS[RequirementStatus.FAIL]} {reason}")], data=result)
+        # The requirement row carries its result, so the shopping list can offer the missing hull
+        # (and, when NOT CHECKED, the hulls to assign: right-click).
+        icon = ICONS[RequirementStatus.NOT_CHECKED if result.status == RequirementStatus.NOT_CHECKED
+                     else RequirementStatus.FAIL]
+        return Node(f"{ICONS[result.status]} {text}", [Node(f"{icon} {reason}")], data=result)
     # Under "Any" location each ship shows where it is (D16).
     any_location = not where
     ships = [ship_node(s, packed, f" · {ship_location(s)}" if any_location else "", notes, fit_name)
              for s in result.ship_results]
     return Node(f"{ICONS[result.status]} {text} · {result.ships_ready} of {result.ships_listed} ready", ships)
+
+
+def implant_set_node(text: str, result: RequirementResult) -> Node:
+    """
+    An implant set requirement (plan 15.3): where its clone is, then a line for each slot
+    that isn't right. The row carries its result: right-click adds a missing set's implants.
+    """
+    implant_set = result.implant_set
+    lines = [Node(f"{ICONS[result.status]} {result.message}")]
+    if implant_set.placement == "MISSING" and implant_set.clone:
+        closest = implant_set.clone + (f" in {implant_set.where}" if implant_set.where else "")
+        lines.append(Node(f"Closest: {closest}"))
+    lines += [Node(slot_text(s)) for s in implant_set.slots if s.status != RequirementStatus.PASS]
+    return Node(f"{ICONS[result.status]} {text}", lines, data=result)
+
+
+def slot_text(slot: ImplantSlotResult) -> str:
+    """'❌ Slot 5: empty (needs High-grade Amulet Epsilon)', '⚠ Slot 10: ... HG-1006 (1008 preferred)'."""
+    worn = slot.worn_name or "empty"
+    reason = f"needs {slot.listed_name}" if slot.reason == "empty" else slot.reason
+    return f"{ICONS[slot.status]} Slot {slot.slot}: {worn} ({reason})"
 
 
 # --- characters ------------------------------------------------------------------------------
@@ -181,7 +245,8 @@ def character_status(result: Optional[AuditResult], packed: Sequence[PackedShipW
     if result is None:
         return None
     if not result.overall_pass:
-        return RequirementStatus.FAIL
+        failed = any(r.status == RequirementStatus.FAIL for r in result.requirement_results)
+        return RequirementStatus.FAIL if failed else RequirementStatus.NOT_CHECKED
     if packed or any(r.status == RequirementStatus.WARN for r in result.requirement_results):
         return RequirementStatus.WARN
     return RequirementStatus.PASS
@@ -201,6 +266,8 @@ def packed_line(warning: PackedShipWarning, location_name: str) -> str:
         line += f" · {location_name}"
     if warning.reason == "exceeds_requirement":
         line += " · more than required"
+    if warning.reason == "wrong_fit":           # plan 20.2: the bay names a saved fitting
+        line += f" · should be {warning.fit_name}: {warning.detail}"
     return line
 
 

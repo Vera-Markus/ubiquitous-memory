@@ -3,19 +3,27 @@ Question 2: is each item aboard where the fitting puts it? (design §9.2-9.3)
 
 Only quantities that are aboard are considered: a missing item is already a
 failure and isn't also a refit. The answer is a list of refit moves:
-"fit X (from cargo)", "unfit Y (to cargo)", "reconfigure subsystem Z".
-Slot numbers never matter; only the slot category does.
+"fit X (from cargo)", "stow Y (to cargo)" where the fitting carries it there, and
+"remove Z" for a fitted module the fitting doesn't want anywhere (UI thoughts 1,
+plan 17.4). Slot numbers never matter; only the slot category does.
 """
 from collections import Counter, defaultdict
 from typing import Dict, List
 
 from app.loaders.sde_rules import SdeRules
 from app.models.audit_models import RefitMove
-from app.services.audit.expectations import EXPECTED_LOCATIONS, SLOT_LOCATIONS, Expectations
+from app.services.audit.expectations import EXPECTED_LOCATIONS, FIGHTER_TUBES, SLOT_LOCATIONS, Expectations
 from app.services.audit.inventory import AboardItem, InventoryResult
 
 # Where moves come from, in preference order: the cargo pool first, then bays, then slots.
-SOURCE_ORDER = ("cargo", "fuel_bay", "drones", "fighters") + SLOT_LOCATIONS
+SOURCE_ORDER = ("cargo", "fuel_bay", "drones", "fighters", FIGHTER_TUBES) + SLOT_LOCATIONS
+REMOVE = "remove"       # a move's destination when the fitting doesn't want the item anywhere aboard
+
+
+def strict_locations(expectations: Expectations) -> tuple:
+    """Where anything beyond the fitting comes off: the slots, and fighter tubes and bay once a
+    fitting pre-loads tubes (plan 20.3: the bay holds exactly the rest)."""
+    return SLOT_LOCATIONS + (("fighters", FIGHTER_TUBES) if FIGHTER_TUBES in expectations else ())
 
 
 def evaluate_configuration(expectations: Expectations, aboard_items: List[AboardItem],
@@ -65,7 +73,7 @@ def evaluate_configuration(expectations: Expectations, aboard_items: List[Aboard
 
     # A variant standing in for a doctrine module stays where it is: it's a substitute, not a refit.
     for key, quantity in inventory.substitute_used.items():
-        for location in SLOT_LOCATIONS + ("drones", "fighters", "cargo"):
+        for location in SLOT_LOCATIONS + ("drones", "fighters", FIGHTER_TUBES, "cargo"):
             if quantity <= 0:
                 break
             used = min(quantity, excess.get(location, Counter())[key])
@@ -73,11 +81,12 @@ def evaluate_configuration(expectations: Expectations, aboard_items: List[Aboard
                 excess[location][key] -= used
                 quantity -= used
 
-    # Anything left in a fitted slot doesn't belong there: unfit it.
-    for location in SLOT_LOCATIONS:
+    # Anything left in a fitted slot isn't wanted anywhere aboard (what the fitting carries in
+    # cargo was moved there above): take it off the ship. Likewise extra fighters once tubes are split.
+    for location in strict_locations(expectations):
         for key in sorted(excess.get(location, ())):
             if excess[location][key] > 0:
-                moves.append(RefitMove(key, names[key], excess[location][key], location, "cargo"))
+                moves.append(RefitMove(key, names[key], excess[location][key], location, REMOVE))
 
     # Subsystem changes reshape the whole slot layout, so they come first.
     return sorted(moves, key=lambda m: 0 if "subsystem" in (m.from_location, m.to_location) else 1)
