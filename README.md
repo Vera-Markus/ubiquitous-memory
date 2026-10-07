@@ -11,6 +11,19 @@ A Windows desktop tool for fleet organisers in EVE Online. Build a library of fi
 
 **Help → User Guide** (F1) explains the workflows and how the tabs connect.
 
+## What's new in 1.0.0-rc5
+
+No new permissions and no database rebuild: install over RC4. Your library, ships and settings are kept.
+
+- **Hard and soft requirements.** Tick **Soft requirement** when adding one in the Library (or right-click it ▸ **Make Soft**). A soft requirement is checked the same way but only warns: the pilot stays ready, and **Add Every Missing Item** leaves its ships out. A hard requirement for a whole system (or any system) makes the role's requirements for the same fitting inside it soft, so one ship can serve both. When a doctrine package update changes requirements you made hard or soft, you're asked whether to keep yours.
+- **Coloured status icons.** Ready, warning and failing lines have coloured icons in every theme, and failing lines are tinted: red for a hard failure (something to buy), yellow for a soft one (something to move).
+- **Homes.** Each ship has a **Home** system (or **Anywhere**, for supers and titans that live in space), set in the Ships tab and filled in when you assign a fitting. A ship serves its Home system's requirements; elsewhere in that system it's *move it to the station*, away from it it's *deployed: bring it back*. Both are soft failures, never a purchase. Ships assigned before this update have no Home and audit as before until you give them one (right-click ▸ **Make <system> Its Home**).
+- **<Personal>** at the top of the Ships tab's Fitting list: for ships that aren't doctrine ships. The audit never looks at them.
+- **Before suggesting a replacement,** the audit looks for a ship with no fitting in the same system, in case you've already bought one.
+- **Doctrines ▸ By System:** audit one system's requirements for every pilot, then **Onboard Ships Here** (new ships get their fitting and Home in one go) or **Adopt Ships Here** (ships moved for a deployment take this system as Home, with a warning if that leaves another system short). Both show a preview first.
+- **Fittings tab:** a search box above the list (ship class, hull or fitting name).
+- **Ships tab:** opens with the ship list at three-quarters of the width, and its columns sized to their text.
+
 ## What's new in 1.0.0-rc4
 
 A small update to RC3: no new permissions and no database rebuild, so just install over RC3.

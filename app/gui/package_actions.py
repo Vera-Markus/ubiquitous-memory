@@ -133,6 +133,14 @@ class PackageActions:
             self._on_import_failed("\n".join(e.problems))
             return
         self._log(f"[INFO] Import plan: {plan.summary()}")
+        if plan.priority_differences and plan.ok:
+            # P6: hard/soft the pilot changed from the package's. Yes: the fitting manager's; No: theirs stay.
+            lines = "\n".join(f"• {d.label()}" for d in plan.priority_differences)
+            if not messagebox.askyesno(
+                    "Hard and Soft Requirements",
+                    f"You changed whether these requirements are hard or soft:\n\n{lines}\n\n"
+                    f"Reset hard/soft requirements to the fitting manager's designations?"):
+                plan.keep_own_priorities()
         if plan.added_requirements and plan.ok:
             # The pilot's own added requirements: keep them? Yes: choose which. No: they go.
             count = len(plan.added_requirements)
@@ -187,6 +195,8 @@ class PackageActions:
                              ("Your replacements dropped (the original applies again):",
                               result.get("corrections_dropped", [])),
                              ("Requirements kept:", result.get("requirements_kept", [])),
+                             ("Your hard/soft choices kept:", result.get("priorities_kept", [])),
+                             ("Hard/soft reset to the fitting manager's:", result.get("priorities_reset", [])),
                              ("Moved to your own fittings:", result.get("moved_to_personal", [])),
                              ("Character assignments dropped:", result["dropped_assignments"]),
                              ("Character assignments skipped, for characters you haven't added "

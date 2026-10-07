@@ -15,10 +15,15 @@ from app.services.implant_rules import is_implant_set, set_name
 from app.services.tracking import TrackingContext
 
 ASSIGN_LABEL = "Assign the Fitting to"
-from app.models.audit_models import RequirementResult, ShipRequirementResult
+ADOPT_LABEL = "Make the System It's In Its Home"
+from app.models.audit_models import AuditResult, RequirementResult, ShipRequirementResult
+from app.gui.type_ahead import TypeAhead
+from app.gui.dialogs.onboard_dialog import AdoptDialog, OnboardDialog
+from app.services.onboarding import PERSONAL, adoption_warnings, apply_adoption, apply_onboarding, plan_system
 from app.services.shopping_list_service import ShoppingListService, item_key, items_text, merge_items, without_items
 from app.services.stock import StockIndex, list_text, merge_pulls
 from app.gui import style as ui_style
+from app.gui.status_icons import StatusIcons, mark, shown_text, unmark
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +55,7 @@ class AuditTab:
         self.last_tracking = None       # the last audit's TrackingContext (its universe is the stock)
         self._shopping_rows = {}        # shopping list row -> item_key
         self._node_data = {}            # tree item -> the ShipRequirementResult behind a ship row
+        self._row_priority = {}         # ship row -> its requirement's priority ("hard" or "soft")
         self._audit_running = False
         self._last_clicked_item = None  # the audit tree row last right-clicked
         self.last_audit_results = []
@@ -103,18 +109,39 @@ class AuditTab:
         top_frame = ttk.Frame(self.frame)
         top_frame.pack(fill=tk.X, padx=10, pady=10)
 
-        ttk.Label(top_frame, text="Doctrine:").pack(side=tk.LEFT, padx=5)
+        # By Doctrine: a doctrine and its roles. By System (homes and priorities plan, 24.1): every
+        # character's requirements in one system. The two tabs above the tree swap these controls.
+        self.doctrine_controls = ttk.Frame(top_frame)
+        self.doctrine_controls.pack(side=tk.LEFT)
+        ttk.Label(self.doctrine_controls, text="Doctrine:").pack(side=tk.LEFT, padx=5)
         
-        self.audit_doctrine_combo = ttk.Combobox(top_frame, state="readonly")
+        self.audit_doctrine_combo = ttk.Combobox(self.doctrine_controls, state="readonly")
         self.audit_doctrine_combo.pack(side=tk.LEFT, padx=5)
 
         self.btn_run_doctrine_audit = ttk.Button(
-            top_frame, 
+            self.doctrine_controls,
             text="Run Doctrine Audit", 
             command=self._handle_run_doctrine_audit,
         )
         self.btn_run_doctrine_audit.pack(side=tk.LEFT, padx=20)
         self._populate_audit_doctrine_combo()           # also enables the button when there's a doctrine
+
+        self.system_controls = ttk.Frame(top_frame)       # packed when By System is chosen
+        ttk.Label(self.system_controls, text="System:").pack(side=tk.LEFT, padx=5)
+        self.audit_system_combo = ttk.Combobox(self.system_controls, width=24)
+        self.audit_system_combo.pack(side=tk.LEFT, padx=5)
+        self._system_ahead = TypeAhead(self.audit_system_combo, lambda name: None, noun="system")
+        self.btn_run_system_audit = ttk.Button(self.system_controls, text="Audit System",
+                                               command=self._handle_run_system_audit)
+        self.btn_run_system_audit.pack(side=tk.LEFT, padx=20)
+        # 24.2: previews the user confirms; nothing changes before Apply.
+        ttk.Button(self.system_controls, text="Onboard Ships Here…", command=self._handle_onboard_system).pack(
+            side=tk.LEFT, padx=5)
+        ttk.Button(self.system_controls, text="Adopt Ships Here…", command=self._handle_adopt_system).pack(
+            side=tk.LEFT, padx=5)
+        self.onboard_dialog = self.adopt_dialog = None
+        self._audit_systems = {}                          # solar system name -> ID, read when By System opens
+        self.audit_mode = "doctrine"
 
         # --- Main Layout: Split into two panes ---
         main_paned_window = tk.PanedWindow(self.frame, orient=tk.HORIZONTAL)
@@ -122,10 +149,18 @@ class AuditTab:
 
         # --- LEFT SIDE: Doctrine Audit Tree ---
         left_pane = ttk.LabelFrame(main_paned_window, text="Doctrine Audit Tree", padding=(5, 5))
+        self.audit_tree_frame = left_pane
         main_paned_window.add(left_pane, width=500)
+
+        self.audit_mode_tabs = ttk.Notebook(left_pane)
+        for text in ("By Doctrine", "By System"):
+            self.audit_mode_tabs.add(ttk.Frame(self.audit_mode_tabs, height=1), text=text)
+        self.audit_mode_tabs.pack(fill=tk.X)
+        self.audit_mode_tabs.bind("<<NotebookTabChanged>>", self._on_audit_mode_changed)
 
         self.audit_tree = ttk.Treeview(left_pane)
         self.audit_tree.pack(fill=tk.BOTH, expand=True)
+        self.audit_tree.status_icons = StatusIcons(self.audit_tree)     # coloured status icons and tints (D6)
 
         # Empty State Label for Tree
         self.lbl_audit_empty = ttk.Label(left_pane, text="No audit data loaded.", font=(ui_style.FONT_FAMILY, 12, "italic"),
@@ -153,6 +188,9 @@ class AuditTab:
         self.audit_tree_context_menu.add_separator()
         self.assign_menu = tk.Menu(self.audit_tree_context_menu, tearoff=0)
         self.audit_tree_context_menu.add_cascade(label=ASSIGN_LABEL, menu=self.assign_menu)
+        # A ship with no Home (assigned before Homes): Adopt makes the system it's in its Home (23.4).
+        self.audit_tree_context_menu.add_command(label=ADOPT_LABEL, command=self._handle_adopt, state=tk.DISABLED)
+        self._adopt_index = self.audit_tree_context_menu.index(tk.END)
 
         # --- RIGHT SIDE: Shopping List Panel ---
         right_pane = ttk.Frame(main_paned_window)
@@ -232,6 +270,11 @@ class AuditTab:
         target = self._assign_target(item_id)
         self._fill_assign_menu(target)
         self.audit_tree_context_menu.entryconfigure(ASSIGN_LABEL, state=tk.NORMAL if target else tk.DISABLED)
+        ship = self._node_data.get(item_id)
+        adopt = getattr(ship, "adopt_system_id", None) if isinstance(ship, ShipRequirementResult) else None
+        self.audit_tree_context_menu.entryconfigure(
+            self._adopt_index, state=tk.NORMAL if adopt else tk.DISABLED,
+            label=f"Make {self.app.evedb_loader.get_system_name(adopt)} Its Home" if adopt else ADOPT_LABEL)
 
         # Show context menu at the cursor position
         self.audit_tree_context_menu.post(event.x_root, event.y_root)
@@ -264,13 +307,23 @@ class AuditTab:
             self.assign_menu.add_command(label=f"All {len(hulls)} as {fit_name}",
                                          command=lambda: self._assign_hulls(character_id, hulls))
 
+    def _handle_adopt(self):
+        """Adopt (23.4): the right-clicked ship's Home becomes the system it's in, then the audit runs again."""
+        ship = self._node_data.get(self._last_clicked_item)
+        if not isinstance(ship, ShipRequirementResult) or not ship.adopt_system_id or ship.ship_item_id is None:
+            return
+        name = self.app.evedb_loader.get_system_name(ship.adopt_system_id)
+        if self.app.ship_designations.set_home([ship.ship_item_id], {"system_id": ship.adopt_system_id}):
+            self._log(f"[INFO] {ship.custom_name or ship.ship_name}'s Home is {name} now; auditing again.")
+            self._handle_run_doctrine_audit()
+
     def _assign_hulls(self, character_id, hulls):
         """Gives the hulls the requirement's fitting, owned by the character, then audits again."""
         when = datetime.now(timezone.utc).isoformat(timespec="seconds")
         owner = {"kind": "character", "id": int(character_id)}
         for hull in hulls:
             self.app.ship_designations.assign(hull["item_id"], hull["type_id"], hull["fit_uid"], owner,
-                                              hull["custom_name"], when)
+                                              hull["custom_name"], when, system_id=hull.get("system_id"))
         self._log(f"[INFO] Assigned {hulls[0]['fit_name']} to {len(hulls)} ship(s); auditing again.")
         self._handle_run_doctrine_audit()
 
@@ -327,7 +380,7 @@ class AuditTab:
         if result is None:
             messagebox.showinfo("Info", "Please select a ship, or a requirement with no ship, to add what it's missing.")
             return
-        row_text = self.audit_tree.item(row, "text")
+        row_text = shown_text(self.audit_tree, row)
         key = self._shopping_key(row, result)
         if key in self._added_ships:
             self._log(f"[INFO] Already on the shopping list: {row_text}")
@@ -356,14 +409,15 @@ class AuditTab:
         added to what's already there. Each ship counts once, as if added by hand:
         a ship already on the list is skipped, and a ship shown under several
         requirements is bought for once (the most of each item, D14). Replacements
-        for missing ships are left to their own requirement rows.
+        for missing ships are left to their own requirement rows. Only ships a hard
+        requirement needs are added; a ship listed only under soft ones is added by hand (P7).
         """
         service = self._shopping_service()
-        needs_by_ship, rows_by_ship = {}, {}
+        needs_by_ship, rows_by_ship, hard = {}, {}, set()
         for tree_item, row_result in self._node_data.items():
             if not isinstance(row_result, ShipRequirementResult):
                 continue
-            if row_result.placement in ("AWAY", "MISSING"):
+            if row_result.placement in ("AWAY", "IN_SYSTEM", "DEPLOYED", "MISSING"):
                 continue        # away: refitted where it is (D4); missing: a replacement only by hand (D10)
             key = self._shopping_key(tree_item, row_result)
             if key in self._added_ships:
@@ -373,9 +427,14 @@ class AuditTab:
                 merged[type_id] = (name, max(merged.get(type_id, (name, 0))[1], quantity))
             rows_by_ship.setdefault(key, []).append(tree_item)
             self._share_places.setdefault(key, self._share_place(tree_item, row_result))
-        added = 0
+            if self._row_priority.get(tree_item, "hard") == "hard":
+                hard.add(key)
+        added, soft_only = 0, 0
         for key, needs in needs_by_ship.items():
             if not needs:
+                continue
+            if key not in hard:
+                soft_only += 1
                 continue
             self._contributions[key] = service.items(needs)
             self._added_ships[key] = key
@@ -386,6 +445,8 @@ class AuditTab:
         self._update_shopping_list_ui()
         self._log(f"[INFO] Added what {added} ship(s) in this audit are missing to the shopping list: "
                   f"{len(self.shopping_items)} item type(s) on it now.")
+        if soft_only:
+            self._log(f"[INFO] Left out {soft_only} ship(s) needed only by soft requirements: right-click to add them.")
 
     def _handle_clear_shopping_list(self):
         for tree_item in self._rows_on_list(self._added_ships):
@@ -481,9 +542,7 @@ class AuditTab:
                      if tuple(self.audit_tree.item(child, "values")) == (MISSING_ITEMS,)
                      for line in self.audit_tree.get_children(child)]
         for line in lines:
-            text = self.audit_tree.item(line, "text")
-            if text.startswith("[x] "):
-                self.audit_tree.item(line, text=text[4:])
+            self.audit_tree.item(line, text=unmark(self.audit_tree.item(line, "text")))
 
     def shopping_list_text(self) -> str:
         """What Copy and Export produce: the Pull lines, then the Buy lines, each under its heading
@@ -500,16 +559,12 @@ class AuditTab:
         """Show "[x]" on the missing item lines of a ship (or the missing hull line) that's on the shopping list."""
         if isinstance(self._node_data.get(ship_item), RequirementResult):
             for line in list(self.audit_tree.get_children(ship_item))[:1]:     # the reason line, not the offers
-                text = self.audit_tree.item(line, "text")
-                if not text.startswith("[x] "):
-                    self.audit_tree.item(line, text=f"[x] {text}")
+                self.audit_tree.item(line, text=mark(self.audit_tree.item(line, "text")))
             return
         for child in self.audit_tree.get_children(ship_item):
             if tuple(self.audit_tree.item(child, "values")) == (MISSING_ITEMS,):
                 for line in self.audit_tree.get_children(child):
-                    text = self.audit_tree.item(line, "text")
-                    if not text.startswith("[x] "):
-                        self.audit_tree.item(line, text=f"[x] {text}")
+                    self.audit_tree.item(line, text=mark(self.audit_tree.item(line, "text")))
 
     def _update_shopping_list_ui(self):
         """Shows the shopping list, its totals, and enables Copy and Export when there's something on it."""
@@ -644,8 +699,10 @@ class AuditTab:
         """Main thread: store the results and draw the tree."""
         self._audit_running = False
         self.btn_run_doctrine_audit.config(state=tk.NORMAL)
+        self.btn_run_system_audit.config(state=tk.NORMAL)
         self.audit_tree.delete(*self.audit_tree.get_children())
         self._node_data = {}
+        self._row_priority = {}
         if error is not None:
             self._log(f"[ERROR] Doctrine audit failed: {error}")
             messagebox.showerror("Audit Error", f"An error occurred during the doctrine audit:\n{error}")
@@ -654,7 +711,10 @@ class AuditTab:
         self.last_audit_results = results
         self.last_packed_ships = packed
         self.last_carried_ships = carried
-        self._populate_audit_tree(doctrine_name, doctrine_data)
+        if doctrine_data.get("system_id") is not None:
+            self._populate_system_tree(doctrine_name, doctrine_data)
+        else:
+            self._populate_audit_tree(doctrine_name, doctrine_data)
         self._remark_added_ships()
         if self._contributions:             # stock may have moved since: pull and buy again (plan 21)
             self._rebuild_shopping_items()
@@ -667,9 +727,12 @@ class AuditTab:
         self.audit_tree.insert('', 'end', text=message, values=("",))
 
     def _insert_node(self, parent: str, node: Node) -> str:
-        item = self.audit_tree.insert(parent, 'end', text=node.text, open=node.open, values=node.values)
+        item = self.audit_tree.status_icons.insert(parent, 'end', text=node.text, tone=node.tone, open=node.open,
+                                                   values=node.values)
         if node.data is not None:
             self._node_data[item] = node.data
+        if node.priority is not None:
+            self._row_priority[item] = node.priority
         for child in node.children:
             self._insert_node(item, child)
         return item
@@ -745,39 +808,236 @@ class AuditTab:
                 if role_uid is not None:
                     audit_result = audit_lookup.get((int(char_uid), int(role_uid)))
                 icon = character_icon(audit_result, packed.get(int(char_uid), []))
-                char_id = self.audit_tree.insert(role_id, 'end', text=f"{icon} {char_name}", values=(char_uid, role_uid))
+                char_id = self.audit_tree.status_icons.insert(role_id, 'end', text=f"{icon} {char_name}",
+                                                              values=(char_uid, role_uid))
 
                 # Add requirements as children of the character
                 req_count = 0
                 for req in role_requirements:
                     req_count += 1
-                    fit_uid = fitting_in_use(req)        # the pilot's replacement, if any (step 11.2)
-                    if fit_uid is None:
-                        continue
-
                     matching_req_result = None
                     if audit_result:
                         matching_req_result = next((r for r in audit_result.requirement_results
                                                     if r.req_uid == req.get('req_uid')), None)
-
-                    fitting = self.fitting_manager.get_fitting(fit_uid)
-                    fit_name = fitting.get('fit_name', 'Unknown Fit') if fitting else 'Unknown Fit'
-                    hull = (fitting or {}).get('hull') or fit_name
-                    if is_implant_set(fitting):
-                        hull = f"Implants: {set_name(fitting)}"      # plan 15.3
-                    notes = ((fitting or {}).get("doctrine_metadata") or {}).get("notes", "")
-                    replacing = ""
-                    if fit_uid != req.get('fit_uid'):
-                        original = self.fitting_manager.get_fitting(req.get('fit_uid')) or {}
-                        replacing = original.get('hull') or original.get('fit_name') or f"fitting {req.get('fit_uid')}"
-                    node = requirement_node(req, hull, matching_req_result, carried,
-                                            lambda ship: self._location_name(ship.location_id), notes, fit_name,
-                                            place_label=self.app.evedb_loader.location_label, replacing=replacing)
-                    self._insert_node(char_id, node)
+                    node = self._requirement_node(req, matching_req_result, carried)
+                    if node is not None:
+                        self._insert_node(char_id, node)
 
                 logger.debug(f"Character {char_name} populated with {req_count} requirements.")
 
         self._log(f"[SUCCESS] Audit tree populated for {doctrine_name}")
+
+    def _requirement_node(self, req: dict, result, carried) -> "Node | None":
+        """One requirement's row and its ships, for either mode; None for a requirement with no fitting."""
+        fit_uid = fitting_in_use(req)        # the pilot's replacement, if any (step 11.2)
+        if fit_uid is None:
+            return None
+        fitting = self.fitting_manager.get_fitting(fit_uid)
+        fit_name = fitting.get('fit_name', 'Unknown Fit') if fitting else 'Unknown Fit'
+        hull = (fitting or {}).get('hull') or fit_name
+        if is_implant_set(fitting):
+            hull = f"Implants: {set_name(fitting)}"      # plan 15.3
+        notes = ((fitting or {}).get("doctrine_metadata") or {}).get("notes", "")
+        replacing = ""
+        if fit_uid != req.get('fit_uid'):
+            original = self.fitting_manager.get_fitting(req.get('fit_uid')) or {}
+            replacing = original.get('hull') or original.get('fit_name') or f"fitting {req.get('fit_uid')}"
+        return requirement_node(req, hull, result, carried,
+                                lambda ship: self._location_name(ship.location_id), notes, fit_name,
+                                place_label=self.app.evedb_loader.location_label, replacing=replacing)
+
+    # --- By System (homes and priorities plan, 24.1) ----------------------------------------------
+
+    def _on_audit_mode_changed(self, event=None):
+        """The By Doctrine / By System tabs: swap the controls and start the tree afresh."""
+        mode = "system" if self.audit_mode_tabs.index("current") == 1 else "doctrine"
+        if mode == self.audit_mode:
+            return
+        if self._audit_running:                           # finish the running audit in the mode it started
+            self.audit_mode_tabs.select(1 if self.audit_mode == "system" else 0)
+            return
+        self.audit_mode = mode
+        if mode == "system":
+            self.doctrine_controls.pack_forget()
+            self.system_controls.pack(side=tk.LEFT)
+            if not self._audit_systems:
+                self._load_audit_systems()
+        else:
+            self.system_controls.pack_forget()
+            self.doctrine_controls.pack(side=tk.LEFT)
+        self.audit_tree.delete(*self.audit_tree.get_children())
+        self._node_data, self._row_priority = {}, {}
+        self.audit_tree_frame.config(text="System Audit Tree" if mode == "system" else "Doctrine Audit Tree")
+        self.lbl_audit_empty.config(text="Pick a system and press Audit System." if mode == "system"
+                                    else "No audit data loaded.")
+        self._update_audit_tree_ui()
+
+    def _load_audit_systems(self):
+        try:
+            systems = self.app.evedb_loader.get_all_solar_systems()
+        except Exception as e:
+            self._log(f"[WARNING] Couldn't list the solar systems: {e}")
+            return
+        self._audit_systems = {s["solarSystemName"]: s["solarSystemID"] for s in systems}
+        self._system_ahead.set_choices(sorted(self._audit_systems))
+
+    def _system_characters(self, system_id: int) -> dict:
+        """
+        Every linked character assigned to a role with a requirement in the system, across all
+        doctrines (Q4). Any system requirements don't count (Q5). {character ID: name}.
+        """
+        roles = {role["role_uid"] for role in self.role_manager.list_roles()
+                 if any(r.get("system_id") == system_id for r in role.get("requirements", []))}
+        names = {}
+        for name, cid in self.library_char_id_map.items():
+            try:
+                names[int(cid)] = name
+            except (TypeError, ValueError):
+                continue
+        characters = {}
+        for doctrine in self.doctrine_manager.list_doctrines():
+            for role_key, assigned in (doctrine.get("character_assignments") or {}).items():
+                if str(role_key).isdigit() and int(role_key) in roles:
+                    for char in assigned:
+                        if str(char).isdigit() and int(char) in names:
+                            characters.setdefault(int(char), names[int(char)])
+        return dict(sorted(characters.items(), key=lambda c: c[1].casefold()))
+
+    def _handle_run_system_audit(self):
+        """Audit System: every character with a requirement in the system, on a worker thread."""
+        if self._audit_running:
+            return
+        chosen = self._chosen_system("Audit System")
+        if chosen is None:
+            return
+        system_id, name = chosen
+        self.audit_tree.delete(*self.audit_tree.get_children())
+        self._node_data, self._row_priority = {}, {}
+        characters = self._system_characters(system_id)
+        self._log(f"[INFO] System selected: {name}; characters with requirements there: {len(characters)}")
+        if not characters:
+            self._add_empty_state_node(f"No character has a requirement in {name}.")
+            self._update_audit_tree_ui()
+            return
+        self._audit_running = True
+        self.btn_run_system_audit.config(state=tk.DISABLED)
+        self.btn_run_doctrine_audit.config(state=tk.DISABLED)
+        self._add_empty_state_node(f"Auditing {name}...")
+        self._update_audit_tree_ui()
+        threading.Thread(target=self._audit_worker, args=(name, {"system_id": system_id}, characters),
+                         daemon=True).start()
+
+    def _chosen_system(self, title: str):
+        """(system ID, name) from the System box, or None after saying it isn't a system."""
+        typed = self.audit_system_combo.get().strip()
+        name = self._system_ahead.exact(typed) or typed
+        system_id = self._audit_systems.get(name)
+        if system_id is None:
+            messagebox.showwarning(title, "Please pick a solar system from the list.")
+            return None
+        return system_id, name
+
+    def _system_ships(self, title: str):
+        """What Onboard and Adopt would offer in the chosen system: (plan, tracking), or None."""
+        chosen = self._chosen_system(title)
+        if chosen is None or self._audit_running:
+            return None
+        system_id, name = chosen
+        characters = self._system_characters(system_id)
+        if not characters:
+            messagebox.showinfo(title, f"No character has a requirement in {name}.")
+            return None
+        tracking = self._tracking_context(self._log)
+        if tracking is None or tracking.designations is None:
+            messagebox.showerror(title, "The ships couldn't be read: run Pull All, then try again.")
+            return None
+        plan = plan_system(system_id, characters, tracking, self.role_manager, self.doctrine_manager,
+                           self.fitting_manager, self.audit_engine)
+        return plan, tracking
+
+    def _handle_onboard_system(self):
+        """Onboard Ships Here (24.2): new ships get a fitting and this Home, after the preview."""
+        found = self._system_ships("Onboard Ships")
+        if found is None:
+            return
+        plan, _ = found
+        if not plan.onboard and not plan.personal:
+            messagebox.showinfo("Onboard Ships", f"No new ships in {plan.system_name} to onboard.")
+            return
+        self.onboard_dialog = OnboardDialog(self.app, plan, lambda choices, personal:
+                                            self._apply_onboarding(plan, choices, personal))
+
+    def _apply_onboarding(self, plan, choices, personal):
+        assigned, marked = apply_onboarding(plan, choices, personal, self.app.ship_designations)
+        self._log(f"[INFO] Onboarded in {plan.system_name}: {assigned} ship(s) given a fitting and this Home, "
+                  f"{marked} marked {PERSONAL}.")
+        self._handle_run_system_audit()
+
+    def _handle_adopt_system(self):
+        """Adopt Ships Here (24.2): ships with a fitting take this system as Home, after the preview and its warning."""
+        found = self._system_ships("Adopt Ships")
+        if found is None:
+            return
+        plan, tracking = found
+        if not plan.adopt:
+            messagebox.showinfo("Adopt Ships", f"No ships in {plan.system_name} to adopt: every ship there with a "
+                                               f"fitting already has it as its Home.")
+            return
+        self.adopt_dialog = AdoptDialog(
+            self.app, plan, lambda chosen: adoption_warnings(plan, chosen, tracking, self.role_manager,
+                                                             self.doctrine_manager),
+            lambda chosen: self._apply_adoption(plan, chosen))
+
+    def _apply_adoption(self, plan, chosen):
+        changed = apply_adoption(plan, chosen, self.app.ship_designations)
+        self._log(f"[INFO] Adopted {changed} ship(s): their Home is {plan.system_name} now.")
+        self._handle_run_system_audit()
+
+    def _populate_system_tree(self, system_name: str, data: dict):
+        """
+        The system's requirements: system ▸ station (any station first) ▸ character · role ▸
+        requirement ▸ ships. The character row is each requirement's parent, as By Doctrine, so
+        the right-click menus work the same.
+        """
+        system_id = data["system_id"]
+        root_id = self.audit_tree.insert('', 'end', text=system_name, open=True)
+        carried = {}
+        for ships in self.last_carried_ships.values():
+            carried.update(carried_by_item(ships))
+        names = {}
+        for name, cid in self.library_char_id_map.items():
+            if str(cid).isdigit():
+                names[int(cid)] = name
+        stations = {}
+        for result in self.last_audit_results:
+            role = self.role_manager.get_role(result.role_uid) or {}
+            by_uid = {r.req_uid: r for r in result.requirement_results}
+            for req in role.get('requirements', []):
+                if req.get('system_id') != system_id:
+                    continue
+                station = (self.app.evedb_loader.location_label(req['location_id'], req.get('location_name'))
+                           if req.get('location_id') else "Any station")
+                stations.setdefault(station, {}).setdefault((result.character_id, result.role_uid, role.get('role_name', '')),
+                                                            []).append((req, by_uid.get(req['req_uid'])))
+        if not stations:
+            self.audit_tree.insert(root_id, 'end', text=f"No requirements in {system_name}.", values=("",))
+        for station in sorted(stations, key=lambda s: (s != "Any station", s.casefold())):
+            station_id = self.audit_tree.insert(root_id, 'end', text=station, open=True)
+            entries = stations[station]
+            for (char_id, role_uid, role_name) in sorted(
+                    entries, key=lambda k: (names.get(k[0], str(k[0])).casefold(), k[2].casefold())):
+                rows = entries[(char_id, role_uid, role_name)]
+                shown = AuditResult(character_id=char_id, role_uid=role_uid, role_name=role_name,
+                                    requirement_results=[r for _, r in rows if r is not None])
+                icon = character_icon(shown, [])
+                char_row = self.audit_tree.status_icons.insert(
+                    station_id, 'end', text=f"{icon} {names.get(char_id, char_id)} · {role_name}",
+                    values=(char_id, role_uid), open=True)
+                for req, result in rows:
+                    node = self._requirement_node(req, result, carried)
+                    if node is not None:
+                        self._insert_node(char_row, node)
+        self._log(f"[SUCCESS] Audit tree populated for {system_name}")
 
     def _handle_copy_shopping_list(self):
         """Copies the shopping list to the clipboard."""

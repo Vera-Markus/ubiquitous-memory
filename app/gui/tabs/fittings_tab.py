@@ -12,7 +12,7 @@ from app.loaders.role_manager import fitting_in_use
 from app.paths import EVE_DB_PATH
 from app.services.doctrine_metadata_form import bay_list_text, metadata_bays, prompt_kind
 from app.services.fitting_display_formatter import FittingDisplayFormatter
-from app.services.fitting_tree_service import FittingTreeService, fitting_label
+from app.services.fitting_tree_service import FittingTreeService, filter_groups, fitting_label
 from app.services.shopping_list_service import fitting_items, items_text
 from app.gui import style as ui_style
 from app.gui.style import DANGER_BUTTON
@@ -41,6 +41,9 @@ class FittingsTab:
         self.mode = "view"              # the fitting box: "view", "edit" or "new" (see _set_mode)
         self._editing_uid = None        # the fitting Save replaces, in edit mode
         self._edit_start_text = ""      # what the box held when editing began (Cancel asks if it changed)
+        self.search_var = tk.StringVar()    # filters the tree by class, hull or fitting name
+        self._open_rows = {}            # class and hull rows' open state, kept while a search opens them all
+        self._tree_filtered = False     # the tree shows search results (so its open state isn't the user's)
 
         self._setup_fittings_tab()
 
@@ -84,6 +87,16 @@ class FittingsTab:
         # Fitting List (Navigation)
         self.fitting_list_container = ttk.Frame(left_frame)
         self.fitting_list_container.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
+
+        # Search: filters the tree by ship class, hull or fitting name as you type
+        search_frame = ttk.Frame(self.fitting_list_container)
+        search_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT)
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.search_entry.bind("<Escape>", lambda _event: self.search_var.set(""))
+        ttk.Button(search_frame, text="Clear", command=lambda: self.search_var.set("")).pack(side=tk.LEFT)
+        self.search_var.trace_add("write", lambda *_args: self._refresh_fitting_list(quiet=True))
 
         # Class → Hull → Fitting (UI rework step 6.3). Row IDs: "class:<class>",
         # "hull:<class>:<hull>", "fit:<fit_uid>".
@@ -218,6 +231,8 @@ class FittingsTab:
     def select_fitting(self, fit_uid):
         """Selects a fitting's row, opening its class and hull."""
         row = f"fit:{fit_uid}"
+        if not self.fitting_tree.exists(row) and self.search_var.get().strip():
+            self.search_var.set("")                     # hidden by the search: show everything again
         if not self.fitting_tree.exists(row):
             return
         parent = self.fitting_tree.parent(row)
@@ -352,30 +367,45 @@ class FittingsTab:
         self.library_view._populate_library_hulls()           # keeps the chosen hull while it still has fittings
         self.library_view._refresh_library_requirement_list()
 
-    def _refresh_fitting_list(self):
-        """Rebuilds the Class → Hull → Fitting tree. Classes and hulls keep their open/closed state."""
-        self._log("[INFO] Refreshing fitting list...")
+    def _refresh_fitting_list(self, quiet=False):
+        """
+        Rebuilds the Class → Hull → Fitting tree, showing only what matches the search.
+        Classes and hulls keep their open/closed state; while searching they're all open,
+        and clearing the search puts them back as they were. quiet: no log lines (typing).
+        """
+        if not quiet:
+            self._log("[INFO] Refreshing fitting list...")
         try:
             fittings = self.fitting_manager.list_fittings()
             if self._fitting_tree_service is None:
                 self._fitting_tree_service = FittingTreeService(self.evedb_loader)
-            groups = self._fitting_tree_service.group(fittings)
+            query = self.search_var.get().strip()
+            groups = filter_groups(self._fitting_tree_service.group(fittings), query)
 
             tree = self.fitting_tree
-            known = {row: bool(tree.item(row, "open")) for row in self._tree_rows()}
+            if not self._tree_filtered:
+                self._open_rows.update({row: bool(tree.item(row, "open")) for row in self._tree_rows()})
+            self._tree_filtered = bool(query)
+            selected = tree.selection()
             tree.delete(*tree.get_children())
             for class_name, hulls in groups:
                 class_row = f"class:{class_name}"
-                tree.insert("", tk.END, iid=class_row, text=class_name, open=known.get(class_row, True))
+                tree.insert("", tk.END, iid=class_row, text=class_name,
+                            open=bool(query) or self._open_rows.get(class_row, True))
                 for hull, records in hulls:
                     hull_row = f"hull:{class_name}:{hull}"
                     tree.insert(class_row, tk.END, iid=hull_row, text=f"{hull} ({len(records)})",
-                                open=known.get(hull_row, True))
+                                open=bool(query) or self._open_rows.get(hull_row, True))
                     for record in records:
                         tree.insert(hull_row, tk.END, iid=f"fit:{record['fit_uid']}", text=fitting_label(record))
 
+            kept = [row for row in selected if tree.exists(row)]
+            if kept:
+                tree.selection_set(kept)
+                tree.see(kept[0])
             self._update_edit_requirements_button()
-            self._log(f"[SUCCESS] Refreshed fitting list ({len(fittings)} items).")
+            if not quiet:
+                self._log(f"[SUCCESS] Refreshed fitting list ({len(fittings)} items).")
         except Exception as e:
             self._log(f"[ERROR] Failed to refresh fitting list: {e}")
             messagebox.showerror("Error", f"Failed to refresh fitting list: {e}")

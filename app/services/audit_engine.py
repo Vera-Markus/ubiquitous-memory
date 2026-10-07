@@ -22,7 +22,8 @@ the place is audited, as before assignments existed.
 import logging
 from typing import Any, Dict, List, Optional
 
-from app.loaders.role_manager import fitting_in_use
+from app.loaders.role_manager import fitting_in_use, requirement_priority
+from app.loaders.ship_designations import home_system
 from app.loaders.sde_rules import SdeRules
 from app.models.asset_models import AuditSnapshot, ShipAsset
 from app.models.audit_models import (AuditResult, EftItem, ItemShortfall, PackedShipWarning, RequirementResult, RequirementStatus,
@@ -32,10 +33,12 @@ from app.services.audit.carried import Expected, check_carried_ships, pooled
 from app.services.audit.configuration import evaluate_configuration, strict_locations
 from app.services.audit.expectations import FIGHTER_TUBES, Expectations, build_expectations
 from app.models.bay_registry import BAYS, CATEGORY_SHIP
+from app.services.audit.homes import DEPLOYED, HOME, IN_SYSTEM, Placed, share_out
 from app.services.audit.inventory import evaluate_inventory, items_aboard
 from app.services.audit.ranking import listing_order, requirement_status, ship_status
 from app.services.implant_audit import ImplantNeed, audit_implants
 from app.services.implant_rules import is_implant_set
+from app.services.requirement_priority import covering, effective_priority
 
 logger = logging.getLogger("AuditEngine")
 
@@ -74,6 +77,7 @@ class AuditEngine:
             for req in (self.role_manager.get_role(role_uid) or {}).get('requirements', []):
                 self._homes.setdefault(fitting_in_use(req), []).append(
                     (req['req_uid'], req.get('system_id'), req.get('location_id')))
+        self._shared = self._share_homes(snapshot, tracking)
         for role_uid in snapshot.assigned_role_uids:
             role_data = self.role_manager.get_role(role_uid)
             if not role_data:
@@ -84,6 +88,39 @@ class AuditEngine:
             tracking.designations.save()            # where each assigned ship was seen
         logger.debug(f"Audited {len(results)} role(s) for character {snapshot.character_id}")
         return results
+
+    def _share_homes(self, snapshot: AuditSnapshot, tracking: Optional[Any]) -> Dict[int, List[Placed]]:
+        """
+        The character's ships with a Home, shared out among their Home system's requirements for
+        the same fitting by where they're parked (23.3, H10; app/services/audit/homes.py).
+        Returns req_uid -> the ships listed under it. Any system requirements aren't shared:
+        they take every ship of the fitting (H8).
+        """
+        if tracking is None or tracking.designations is None:
+            return {}
+        owner = {"kind": "character", "id": int(snapshot.character_id)}
+        groups: Dict[tuple, List[tuple]] = {}
+        for role_uid in snapshot.assigned_role_uids:
+            role = self.role_manager.get_role(role_uid) or {}
+            for req in role.get('requirements', []):
+                if req.get('system_id') is not None:
+                    groups.setdefault((fitting_in_use(req), req['system_id']), []).append((req, role))
+        shared: Dict[int, List[Placed]] = {}
+        for (fit_uid, system_id), entries in groups.items():
+            ships = []
+            for d in tracking.designations.assigned_to(fit_uid, owner):
+                if home_system(d.get("home")) == system_id:
+                    sighting = tracking.universe.find(d["item_id"])
+                    ships.append((d, sighting if sighting is not None and tracking.universe.is_ship(sighting) else None))
+            if not ships:
+                continue
+            requirements = list({req['req_uid']: req for req, _ in entries}.values())
+            covered = {req['req_uid'] for req, role in entries if covering(role, req) is not None}
+            shared.update(share_out(
+                system_id, requirements, ships, lambda r: r['req_uid'] in covered,
+                lambda r: self.evedb_loader.location_label(r['location_id'], r.get('location_name'))
+                if r.get('location_id') else ""))
+        return shared
 
     def check_carried_ships(self, snapshot: AuditSnapshot, results: Optional[List[AuditResult]] = None) -> List[PackedShipWarning]:
         """
@@ -217,11 +254,15 @@ class AuditEngine:
         for req in role_data.get('requirements', []):
             key = (role_data['role_uid'], req['req_uid'])
             if key in implant_sets:
-                requirements.append(implant_sets[key])
+                result = implant_sets[key]
             elif tracking is not None:
-                requirements.append(self._evaluate_assigned(snapshot, req, tracking))
+                result = self._evaluate_assigned(snapshot, req, tracking)
             else:
-                requirements.append(self._evaluate_requirement(snapshot, req))
+                result = self._evaluate_requirement(snapshot, req)
+            result.priority = effective_priority(role_data, req)
+            if requirement_priority(req) == "hard":
+                result.covered_by = covering(role_data, req)
+            requirements.append(result)
         return AuditResult(
             character_id=snapshot.character_id,
             role_uid=role_data['role_uid'],
@@ -302,71 +343,119 @@ class AuditEngine:
         own_ships = {s.asset.item_id: s for s in snapshot.ships}
         own_context = BayContext(carried=list(snapshot.carried_ships), ships_by_item=own_ships,
                                  get_fitting=self.fitting_manager.get_fitting)
-        home, away, missing = [], [], []
+        home, away, missing, misplaced = [], [], [], []
+
+        def found(d, sighting) -> Optional[ShipRequirementResult]:
+            """The ship audited where it is, or None when it can't be (then it counts as missing)."""
+            if sighting is None or not universe.is_ship(sighting):
+                return None
+            if sighting.holder == {"kind": "character", "id": owner["id"]} and d["item_id"] in own_ships:
+                ship, context = own_ships[d["item_id"]], own_context
+            else:
+                ship, carried, ships = tracking.ships_of(sighting)
+                context = BayContext(carried=carried, ships_by_item=ships, get_fitting=self.fitting_manager.get_fitting)
+            if ship is None:
+                return None
+            result = self._evaluate_ship(ship, expectations, fitting, context)
+            result.bound = True
+            result.holder = tracking.holder_info(sighting)
+            result.where = tracking.where(sighting)
+            designations.record_sighting(d["item_id"], result.where, result.holder)
+            return result
+
+        def lost(d) -> ShipRequirementResult:
+            last = {"where": d.get("seen_where", ""), "holder": d.get("seen_holder")}
+            return ShipRequirementResult(
+                ship_name=fitting.get('hull') or "ship", status=RequirementStatus.FAIL,
+                custom_name=d.get("custom_name") or None, ship_item_id=d["item_id"], placement="MISSING",
+                bound=True, holder=last["holder"], where=last["where"], last_seen=last if last["where"] else None,
+                missing_since=d.get("last_seen"), shortfalls=self._replacement(fitting, hull_type_id))
+
+        # Ships with no Home (assigned before Homes, H7): as before Homes. A system requirement's
+        # ships with a Home were shared out among the system's requirements (_share_homes, 23.3).
         for d in designations.assigned_to(fit_uid, owner) if designations is not None else []:
+            if system_id is not None and d.get("home"):
+                continue
             sighting = universe.find(d["item_id"])
             if sighting is not None and universe.is_ship(sighting) and not universe.at(sighting, system_id, location_id) \
                     and any(universe.at(sighting, s, l) for r, s, l in getattr(self, "_homes", {}).get(fit_uid, [])
                             if r != req_uid):
                 continue            # at the place of another requirement for this fitting: it serves that one
-            if sighting is not None and universe.is_ship(sighting):
-                if sighting.holder == {"kind": "character", "id": owner["id"]} and d["item_id"] in own_ships:
-                    ship, context = own_ships[d["item_id"]], own_context
-                else:
-                    ship, carried, ships = tracking.ships_of(sighting)
-                    context = BayContext(carried=carried, ships_by_item=ships, get_fitting=self.fitting_manager.get_fitting)
-                if ship is not None:
-                    result = self._evaluate_ship(ship, expectations, fitting, context)
-                    result.bound = True
-                    result.holder = tracking.holder_info(sighting)
-                    result.where = tracking.where(sighting)
-                    designations.record_sighting(d["item_id"], result.where, result.holder)
-                    if universe.at(sighting, system_id, location_id):
-                        result.placement = "HOME"
-                        home.append(result)
-                    else:
-                        result.placement = "AWAY"
-                        away.append(result)
-                    continue
-            last = {"where": d.get("seen_where", ""), "holder": d.get("seen_holder")}
-            missing.append(ShipRequirementResult(
-                ship_name=fitting.get('hull') or "ship", status=RequirementStatus.FAIL,
-                custom_name=d.get("custom_name") or None, ship_item_id=d["item_id"], placement="MISSING",
-                bound=True, holder=last["holder"], where=last["where"], last_seen=last if last["where"] else None,
-                missing_since=d.get("last_seen"), shortfalls=self._replacement(fitting, hull_type_id)))
+            result = found(d, sighting)
+            if result is not None:
+                result.adopt_system_id = sighting.system_id         # no Home yet: Adopt makes this one (23.4)
+            if result is None:
+                missing.append(lost(d))
+            elif universe.at(sighting, system_id, location_id):
+                result.placement = "HOME"
+                home.append(result)
+            else:
+                result.placement = "AWAY"
+                away.append(result)
+        for placed in getattr(self, "_shared", {}).get(req_uid, []):
+            result = found(placed.designation, placed.sighting)
+            if result is None:
+                missing.append(lost(placed.designation))
+                continue
+            result.placement = placed.placement
+            if placed.placement == IN_SYSTEM:
+                result.placement_note = f"move it to {self.evedb_loader.location_label(location_id, requirement.get('location_name'))}"
+            elif placed.placement == DEPLOYED:
+                result.placement_note = f"bring it back to {self.evedb_loader.get_system_name(system_id)}"
+            (home if placed.placement == HOME else misplaced).append(result)
 
-        home, away = listing_order(home), listing_order(away)
-        results = home + away + missing
-        message, shortfalls = None, []
+        home, away, misplaced = listing_order(home), listing_order(away), listing_order(misplaced)
+        results = home + misplaced + away + missing
+        message, shortfalls, is_misplaced = None, [], False
+        hull = fitting.get('hull') or "ship"
+        # Check before buying (23.4, H5): hulls the character holds with no fitting (not <Personal>),
+        # anywhere in the requirement's system (anywhere at all for an Any system one).
+        unassigned = [s for s in snapshot.ships
+                      if s.asset.type_id == hull_type_id and self._location_matches(s, system_id, None)
+                      and (designations is None or designations.get(s.asset.item_id) is None)]
+        unassigned_hulls = [{"item_id": s.asset.item_id, "type_id": s.asset.type_id,
+                             "custom_name": s.asset.custom_name or "", "fit_uid": fit_uid,
+                             "fit_name": fitting.get('fit_name', ''),
+                             "system_id": self._system_of(s.root_location_id or s.asset.location_id)}
+                            for s in unassigned]
+        if system_id:
+            where = self.evedb_loader.get_system_name(system_id)
+        else:
+            where = ""
+        found_here = (f"{len(unassigned)} {hull}s" if len(unassigned) > 1 else hull) + \
+            (f" at {where}" if where else "") + " with no fitting assigned"
+
         if home:
             status = requirement_status(home)
+        elif misplaced:
+            # The ships are there, just not here: a move, not a purchase (H9).
+            status, is_misplaced = RequirementStatus.FAIL, True
+            note = misplaced[0].placement_note
+            message = note[:1].upper() + note[1:]
         elif away:
             status = RequirementStatus.FAIL if away[0].status == RequirementStatus.FAIL else RequirementStatus.WARN
         elif missing:
-            status = RequirementStatus.FAIL
-            shortfalls = self._replacement(fitting, hull_type_id)
             since = missing[0].missing_since or ""
             message = f"Missing since {since[:10]}" + (f": last seen {missing[0].where}" if missing[0].where else "")
+            if unassigned:
+                # Maybe its replacement, already bought: assign it rather than buy another (H5).
+                return RequirementResult(req_uid=req_uid, status=RequirementStatus.NOT_CHECKED,
+                                         requirement_details=requirement, ship_results=results,
+                                         message=f"{found_here}: not checked", unassigned_hulls=unassigned_hulls)
+            status = RequirementStatus.FAIL
+            shortfalls = self._replacement(fitting, hull_type_id)
         else:
-            unassigned = [s for s in snapshot.ships
-                          if s.asset.type_id == hull_type_id and self._location_matches(s, system_id, location_id)
-                          and (designations is None or designations.get(s.asset.item_id) is None)]
-            where = (self.evedb_loader.location_label(location_id, requirement.get('location_name')) if location_id
-                     else self.evedb_loader.get_system_name(system_id) if system_id else "")
-            hull = fitting.get('hull') or "ship"
+            if location_id:
+                where = self.evedb_loader.location_label(location_id, requirement.get('location_name'))
             if not unassigned:
                 return RequirementResult(req_uid=req_uid, status=RequirementStatus.FAIL, requirement_details=requirement,
                                          shortfalls=self._replacement(fitting, hull_type_id),
                                          message=f"No {hull} in {where}" if where else f"No {hull} found")
-            count = f"{len(unassigned)} {hull}s" if len(unassigned) > 1 else hull
             return RequirementResult(
                 req_uid=req_uid, status=RequirementStatus.NOT_CHECKED, requirement_details=requirement,
-                message=f"{count}{' at ' + where if where else ''} with no fitting assigned: not checked",
-                unassigned_hulls=[{"item_id": s.asset.item_id, "type_id": s.asset.type_id,
-                                   "custom_name": s.asset.custom_name or "", "fit_uid": fit_uid,
-                                   "fit_name": fitting.get('fit_name', '')} for s in unassigned])
+                message=f"{found_here}: not checked", unassigned_hulls=unassigned_hulls)
         return RequirementResult(req_uid=req_uid, status=status, requirement_details=requirement,
-                                 ship_results=results, message=message, shortfalls=shortfalls)
+                                 ship_results=results, message=message, shortfalls=shortfalls, misplaced=is_misplaced)
 
     @staticmethod
     def _replacement(fitting: Dict[str, Any], hull_type_id: Optional[int]) -> List[ItemShortfall]:

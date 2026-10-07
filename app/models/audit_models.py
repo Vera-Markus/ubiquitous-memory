@@ -102,7 +102,12 @@ class ShipRequirementResult:
     substitutions: List[Substitution] = field(default_factory=list)
     bay_results: List[BayResult] = field(default_factory=list)
     # Assigned ships (UI thoughts plan 18.3). Without a tracking context every ship is UNBOUND.
-    placement: str = "UNBOUND"                  # HOME, AWAY, MISSING, or UNBOUND (no assignments known)
+    # HOME, AWAY (no Home: before Homes), IN_SYSTEM and DEPLOYED (Home S, elsewhere: move it, plan 23.3),
+    # MISSING, or UNBOUND (no assignments known)
+    placement: str = "UNBOUND"
+    placement_note: str = ""                    # IN_SYSTEM / DEPLOYED: "move it to Jita IV-4", "bring it back to Jita"
+    # A ship with no Home (assigned before Homes, H7): the system it's in, offered as its Home (Adopt, 23.4).
+    adopt_system_id: Optional[int] = None
     bound: bool = False                         # assigned this requirement's fitting and owned by the character
     holder: Optional[Dict[str, Any]] = None     # {"kind": "character"|"corporation", "id", "name"}
     where: str = ""                             # "Jita IV - Moon 4 - Caldari Navy Assembly Plant (deliveries)"
@@ -156,6 +161,27 @@ class RequirementResult:
     unassigned_hulls: List[Dict[str, Any]] = field(default_factory=list)
     # An implant set requirement (a Capsule fitting) has no ships: its clone match instead.
     implant_set: Optional[ImplantSetResult] = None
+    # "hard" or "soft" (homes and priorities plan, P1): only hard requirements decide readiness.
+    priority: str = "hard"
+    # When a wider hard requirement for the same fitting locks this one soft (P4): that requirement.
+    covered_by: Optional[Dict[str, Any]] = None
+    # Its ships exist but are in the wrong place (in the system, or deployed): a failure to move, not to buy (H9).
+    misplaced: bool = False
+
+    @property
+    def counts_for_readiness(self) -> bool:
+        return self.priority != "soft"
+
+    @property
+    def failure(self) -> Optional[str]:
+        """
+        "hard" when the requirement fails and decides readiness, "soft" when it fails but
+        only warns (P2), None when it doesn't fail. A soft failure points at something to
+        move or fix; a hard one at something to buy.
+        """
+        if self.status != RequirementStatus.FAIL:
+            return None
+        return "hard" if self.counts_for_readiness and not self.misplaced else "soft"
 
     @property
     def ships_listed(self) -> int:
@@ -180,5 +206,8 @@ class AuditResult:
 
     @property
     def overall_pass(self) -> bool:
-        """True when every requirement is ready; a warning still counts as ready."""
-        return all(is_ready(r.status) for r in self.requirement_results)
+        """
+        True when every hard requirement is ready. A warning, a soft failure (a ship to move, H9) and
+        any soft requirement still count as ready.
+        """
+        return all(is_ready(r.status) or r.failure == "soft" for r in self.requirement_results if r.counts_for_readiness)

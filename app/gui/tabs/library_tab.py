@@ -5,7 +5,8 @@ from app.gui import themed_dialogs as messagebox
 from app.gui import style as ui_style
 from app.gui.grouped_list import GroupedList
 from app.gui.type_ahead import TypeAhead
-from app.loaders.role_manager import fit_matches_role, fitting_in_use
+from app.loaders.role_manager import fit_matches_role, fitting_in_use, requirement_priority
+from app.services.requirement_priority import covering, would_lock
 from app.services.implant_rules import is_implant_set, set_name
 
 
@@ -168,12 +169,17 @@ class LibraryTab:
         # On a role a package installed, it's the pilot's own: updates ask before removing it.
         registry = getattr(self.app, "package_registry", None)
         added = bool(registry is not None and registry.installed_by("role", role_uid))
+        priority = "soft" if self.req_soft_var.get() else "hard"
+        candidate = {"fit_uid": fit_uid, "system_id": system_id, "location_id": location_id}
+        if priority == "hard" and not self._confirm_locking(role, candidate):
+            return
         try:
             self.role_manager.add_requirement(role_uid, fit_uid, system_id, location_id,
-                                              station if location_id is not None else None, added=added)
+                                              station if location_id is not None else None, added=added,
+                                              priority=priority)
             self._refresh_library_requirement_list()
-            self._log(f"[INFO] Added requirement to role '{role_name}': {fit_name} @ "
-                      f"{system if system_id is not None else '<Any System>'} @ "
+            self._log(f"[INFO] Added {'soft ' if priority == 'soft' else ''}requirement to role '{role_name}': "
+                      f"{fit_name} @ {system if system_id is not None else '<Any System>'} @ "
                       f"{station if location_id is not None else '<Any Station>'}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -240,6 +246,60 @@ class LibraryTab:
         self._refresh_library_requirement_list(select=req_uid)
         role_name = self.role_manager.get_role(role_uid)['role_name']
         self._log(f"[INFO] Requirement {req_uid} in role '{role_name}' now uses {fit_name}")
+
+    def _on_requirement_right_click(self, event):
+        """Selects the requirement under the pointer and offers Make Soft or Make Hard."""
+        self.library_req_listbox._on_click(event)
+        role_uid, requirement = self._selected_requirement()
+        if requirement is None:
+            return
+        soft = requirement_priority(requirement) == "soft"
+        self.req_menu.delete(0, tk.END)
+        covered = covering(self.role_manager.get_role(role_uid), requirement)
+        if covered is not None:         # locked soft by a wider hard requirement (P4)
+            self.req_menu.add_command(label=f"Soft: covered by {self._area_name(covered)}", state=tk.DISABLED)
+        else:
+            self.req_menu.add_command(label="Make Hard" if soft else "Make Soft",
+                                      command=lambda: self._handle_set_priority("hard" if soft else "soft"))
+        self.req_menu.post(event.x_root, event.y_root)
+
+    def _area_name(self, requirement) -> str:
+        """Where a requirement applies: its station, its system, or "any system"."""
+        if requirement.get('location_id'):
+            return self.evedb_loader.location_label(requirement['location_id'], requirement.get('location_name'))
+        if requirement.get('system_id'):
+            return self.evedb_loader.get_system_name(requirement['system_id'])
+        return "any system"
+
+    def _confirm_locking(self, role, candidate) -> bool:
+        """
+        P5: before a hard requirement turns others in the role soft, say which and ask. Any
+        system – Any station takes in every requirement for its fitting, so it says so.
+        """
+        locked = would_lock(role, candidate)
+        if not locked:
+            return True
+        fit_name = self._fit_label(fitting_in_use(candidate))
+        places = "\n".join(f"• {self._area_name(r)}" for r in locked)
+        anywhere = ("\n\nAny system – Any station covers every requirement for this fitting in the role."
+                    if candidate.get('system_id') is None else "")
+        return messagebox.askyesno(
+            "Requirements Become Soft",
+            f"This makes {len(locked)} hard requirement(s) for {fit_name} in this role soft:\n\n{places}{anywhere}"
+            f"\n\nOne ship can then serve both. Continue?")
+
+    def _handle_set_priority(self, priority: str):
+        """Make Soft / Make Hard on the selected requirement (P3: every user can change it)."""
+        role_uid, requirement = self._selected_requirement()
+        if requirement is None:
+            return
+        req_uid = requirement['req_uid']
+        if priority == "hard" and not self._confirm_locking(self.role_manager.get_role(role_uid), requirement):
+            return
+        if self.role_manager.set_requirement_priority(role_uid, req_uid, priority):
+            self._refresh_library_requirement_list(select=req_uid)
+            role_name = self.role_manager.get_role(role_uid)['role_name']
+            self._log(f"[INFO] Requirement {req_uid} in role '{role_name}' is now {priority}")
 
     def _handle_undo_replacement(self):
         """The selected requirement's own fitting applies again."""
@@ -429,7 +489,14 @@ class LibraryTab:
         self.btn_undo_replacement = ttk.Button(btn_frame, text="Undo Replacement", command=self._handle_undo_replacement,
                                                state=tk.DISABLED)
         self.btn_undo_replacement.grid(row=1, column=1, padx=5, pady=2, sticky=tk.EW)
+        # A soft requirement is audited but only ever warns (homes and priorities plan, P3).
+        self.req_soft_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(btn_frame, text="Soft requirement (warns, never fails)", variable=self.req_soft_var).grid(
+            row=2, column=0, columnspan=2, pady=(4, 0))
         self.library_req_listbox.bind("<<ListboxSelect>>", self._on_requirement_selected)
+        # Right-click a requirement: Make Soft / Make Hard
+        self.req_menu = tk.Menu(self.library_req_listbox, tearoff=0)
+        self.library_req_listbox.bind("<Button-3>", self._on_requirement_right_click)
 
         # --- Right Sidebar (320px) ---
         right_sidebar_frame = ttk.Frame(main_content_frame, width=320)
@@ -644,6 +711,11 @@ class LibraryTab:
             notes = ""
             if fit_uid != req.get('fit_uid'):
                 notes += f" (Replaced {self._fit_label(req.get('fit_uid'))})"
+            covered = covering(selected_role, req)
+            if covered is not None:
+                notes += f" (soft · covered by {self._area_name(covered)})"
+            elif requirement_priority(req) == "soft":
+                notes += " (soft)"
             if req.get('added'):
                 notes += " (added)"
             elif req.get('kept'):

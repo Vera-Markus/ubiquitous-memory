@@ -17,6 +17,7 @@ drawn by themed_dialogs; the Windows menu bar and file dialogs keep the system l
 import json
 import logging
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import ttk
 
@@ -32,7 +33,7 @@ THEMES = {
                   border="#6a5420", button="#3d3115", hover="#4f3f19", accent="#f0c24b",
                   select="#80621a", select_text="#fff8e0", heading="#33290f", trough="#251e0e",
                   heading_text="#f0c24b",
-                  error="#ff7a6b", warn="#ffa84a", ok="#a8d66a", info="#8fb8e0"),
+                  error="#ff5a52", warn="#ffa84a", ok="#a8d66a", info="#8fb8e0"),
     "Caldari": dict(dark=True, bg="#141a20", surface="#1c242c", text="#dce6ef", muted="#8797a6",
                     border="#2e3a46", button="#25313c", hover="#2f3d4a", accent="#4fb3d9",
                     select="#1f4d66", select_text="#ffffff", heading="#19212a", trough="#182028",
@@ -132,6 +133,34 @@ def save_setting(config_dir: Path, key: str, value) -> None:
         path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     except OSError as e:
         logger.warning(f"Couldn't save the setting {key} to {path}: {e}")
+
+
+def fit_columns(tree: ttk.Treeview, columns, padding: int = 24, most: int = 280) -> None:
+    """
+    Sizes each column to its widest text, heading included (at most `most` pixels), so the
+    tree's columns are no wider than they need to be. Columns can still be dragged wider.
+    """
+    style = ttk.Style(tree)
+    body = _font(style.lookup("Treeview", "font"))
+    head = _font(style.lookup("Treeview.Heading", "font"))
+    rows, pending = [], list(tree.get_children())
+    while pending:
+        row = pending.pop()
+        rows.append(row)
+        pending.extend(tree.get_children(row))
+    for column in columns:
+        widest = head.measure(tree.heading(column, "text"))
+        for row in rows:
+            widest = max(widest, body.measure(str(tree.set(row, column))))
+        tree.column(column, width=min(widest + padding, most))
+
+
+def _font(name) -> tkfont.Font:
+    """A style's font: a named font, a font description, or (unset) Tk's default."""
+    try:
+        return tkfont.nametofont(name or "TkDefaultFont")
+    except tk.TclError:
+        return tkfont.Font(font=name)
 
 
 class ScrolledText(tk.Text):

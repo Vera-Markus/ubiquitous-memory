@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.loaders.package_registry import KINDS, PackageRegistry, in_protected_range
-from app.loaders.role_manager import fitting_in_use, is_current_requirement
+from app.loaders.role_manager import fitting_in_use, is_current_requirement, requirement_priority
 from app.models.bay_registry import BAYS
 from app.models.doctrine_metadata import DoctrineMetadata, MetadataError
 from app.services.doctrine_export_service import PACKAGE_TYPE, PACKAGE_VERSION
@@ -77,6 +77,23 @@ class RemovedRequirement:
 
 
 @dataclass
+class PriorityDifference:
+    """
+    A requirement the update keeps whose hard/soft differs from the pilot's (homes and
+    priorities plan, P6). The package's applies unless the pilot keeps their own.
+    """
+    role_name: str
+    fit_name: str
+    place: str
+    yours: str                      # "hard" or "soft"
+    theirs: str
+    requirement: Dict[str, Any] = field(repr=False, compare=False, default_factory=dict)   # the package's, in the plan
+
+    def label(self) -> str:
+        return f"{self.role_name}: {self.fit_name} | {self.place} (you: {self.yours}, package: {self.theirs})"
+
+
+@dataclass
 class ImportPlan:
     package: Dict[str, Any]
     registry_key: str
@@ -119,6 +136,18 @@ class ImportPlan:
     # A pilot's own requirements on package roles the update would remove (asked first: keep them?).
     added_requirements: List[RemovedRequirement] = field(default_factory=list)
     keep_added: List[Tuple[int, int]] = field(default_factory=list)
+    # P6: requirements whose hard/soft the pilot changed from the package's (asked: reset to theirs?).
+    priority_differences: List[PriorityDifference] = field(default_factory=list)
+    own_priorities_kept: bool = False
+
+    def keep_own_priorities(self) -> None:
+        """No to "Reset hard/soft requirements to the fitting manager's designations?": the pilot's stay."""
+        for difference in self.priority_differences:
+            if difference.yours == "soft":
+                difference.requirement["priority"] = "soft"
+            else:
+                difference.requirement.pop("priority", None)
+        self.own_priorities_kept = True
 
     def choose_added(self, keep=()) -> None:
         """Which of the pilot's added requirements to keep (none when they answered No)."""
@@ -251,6 +280,7 @@ class DoctrineImportService:
                                  f"isn't. Check where it came from before importing it.")
 
         self._carry_corrections(package, plan)
+        self._find_priority_differences(package, plan)
         self._find_removed_requirements(package, plan)
         self._check_names(package, plan)
         self._compare_fittings(package, plan)
@@ -360,6 +390,28 @@ class DoctrineImportService:
                 else:
                     new["replacement"] = dict(replacement)
                     plan.corrections_kept.append(f"{role_name}: {name(fit_uid)} (replacing {name(new.get('fit_uid'))})")
+
+    def _find_priority_differences(self, package: Dict[str, Any], plan: ImportPlan) -> None:
+        """
+        P6: each requirement the update keeps (same req_uid) whose hard/soft the pilot changed
+        from the package's. Writes nothing; the package's applies unless keep_own_priorities().
+        """
+        incoming_fits = {f["fit_uid"]: f for f in package.get("fittings") or []}
+        for role in package.get("roles") or []:
+            installed = self.roles.get_role(role["role_uid"])
+            if not installed:
+                continue
+            mine = {r.get("req_uid"): r for r in installed.get("requirements", [])}
+            for new in role.get("requirements") or []:
+                old = mine.get(new.get("req_uid"))
+                if old is None or old.get("added") or requirement_priority(old) == requirement_priority(new):
+                    continue
+                fit_uid = fitting_in_use(new)
+                fitting = incoming_fits.get(fit_uid) or self.fittings.get_fitting(fit_uid) or {}
+                plan.priority_differences.append(PriorityDifference(
+                    role_name=role.get("role_name", str(role["role_uid"])),
+                    fit_name=fitting.get("fit_name") or f"fitting {fit_uid}", place=self._place(new),
+                    yours=requirement_priority(old), theirs=requirement_priority(new), requirement=new))
 
     def _survives(self, package: Dict[str, Any], plan: ImportPlan, fit_uid) -> bool:
         """Whether a fitting is in the library after the import: in the package, or installed and staying."""
@@ -508,6 +560,8 @@ class DoctrineImportService:
                 "corrections_kept": list(plan.corrections_kept), "corrections_changed": list(plan.corrections_changed),
                 "corrections_dropped": list(plan.corrections_dropped),
                 "requirements_kept": plan.kept_lines(), "moved_to_personal": plan.moved_lines(),
+                "priorities_kept": [d.label() for d in plan.priority_differences] if plan.own_priorities_kept else [],
+                "priorities_reset": [] if plan.own_priorities_kept else [d.label() for d in plan.priority_differences],
                 "summary": plan.summary()}
 
     def _apply(self, plan: ImportPlan, use_package_assignments: bool) -> None:

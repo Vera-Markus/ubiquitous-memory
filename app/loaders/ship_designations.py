@@ -12,6 +12,12 @@ or losing the ship gives it a new ID: the old designation then simply matches no
   whose requirements it can serve (A2). Set to the holder when the ship is first assigned,
   kept when the fitting changes, overridden with set_owner. Records from before owners
   existed take their recorded holder as owner.
+- A Home per ship (homes and priorities plan, H1/H2): {"system_id": N}, or {"anywhere": True}
+  for ships that live in space (supers, titans). Set to the ship's system when it's first
+  assigned a fitting, kept when the fitting changes, changed with set_home. Ships assigned
+  before Homes existed have none (H7) and audit as before until given one.
+- <Personal> (S5): a designation with "personal": True and no fitting. The audit, its pokes,
+  onboarding and adoption never see the ship.
 - A designation whose fitting no longer exists is dropped by prune(), which the Ships
   tab calls with every fitting UID each time it loads (so no deletion path leaves one).
 - Clear Library and Full Reset clear the file. Remove Character keeps it: the ships
@@ -36,6 +42,16 @@ logger = logging.getLogger(__name__)
 
 FORMAT = 1
 EXPIRY_DAYS = 30
+ANYWHERE = {"anywhere": True}
+
+
+def home_system(home: Optional[Dict[str, Any]]) -> Optional[int]:
+    """A Home's solar system, or None for no Home or Home Anywhere."""
+    return int(home["system_id"]) if home and home.get("system_id") is not None else None
+
+
+def is_anywhere(home: Optional[Dict[str, Any]]) -> bool:
+    return bool(home and home.get("anywhere"))
 
 
 class ShipDesignations:
@@ -74,7 +90,15 @@ class ShipDesignations:
 
     def fit_uid(self, item_id: int) -> Optional[int]:
         d = self.get(item_id)
-        return d["fit_uid"] if d else None
+        return d.get("fit_uid") if d else None
+
+    def home(self, item_id: int) -> Optional[Dict[str, Any]]:
+        d = self.get(item_id)
+        return d.get("home") if d else None
+
+    def is_personal(self, item_id: int) -> bool:
+        d = self.get(item_id)
+        return bool(d and d.get("personal"))
 
     def owner(self, item_id: int) -> Optional[Dict[str, Any]]:
         d = self.get(item_id)
@@ -84,7 +108,7 @@ class ShipDesignations:
         """The ships assigned this fitting that belong to this owner, by item ID (plan 18.3)."""
         want = {"kind": owner.get("kind"), "id": int(owner.get("id"))}
         return [d for _, d in sorted(self.designations.items())
-                if d["fit_uid"] == int(fit_uid) and {"kind": (d.get("owner") or {}).get("kind"),
+                if d.get("fit_uid") == int(fit_uid) and {"kind": (d.get("owner") or {}).get("kind"),
                                                      "id": int((d.get("owner") or {}).get("id") or 0)} == want]
 
     def record_sighting(self, item_id: int, where: str, holder: Optional[Dict[str, Any]]) -> None:
@@ -100,8 +124,11 @@ class ShipDesignations:
     # --- changing -------------------------------------------------------------------------
 
     def assign(self, item_id: int, type_id: int, fit_uid: int, holder: Dict[str, Any], custom_name: str,
-               when: str) -> Dict[str, Any]:
-        """Gives the ship a fitting, replacing any earlier one."""
+               when: str, system_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Gives the ship a fitting, replacing any earlier one (or <Personal>). The Home stays when
+        the fitting changes; a ship without one gets system_id, the system it's in (H2).
+        """
         holder = {"kind": holder.get("kind"), "id": holder.get("id")}
         earlier = self.get(item_id)
         designation = {"item_id": int(item_id), "type_id": int(type_id), "fit_uid": int(fit_uid),
@@ -109,10 +136,48 @@ class ShipDesignations:
                        "owner": dict(earlier["owner"]) if earlier and earlier.get("owner") else dict(holder),
                        "custom_name": custom_name or "", "assigned_at": when,
                        "last_seen": when}           # it's on screen, so it was in the last pull
+        home = (earlier or {}).get("home") or ({"system_id": int(system_id)} if system_id is not None else None)
+        if home:
+            designation["home"] = dict(home)
         with self._lock:
             self.designations[int(item_id)] = designation
             self.save()
         return designation
+
+    def mark_personal(self, item_id: int, type_id: int, holder: Dict[str, Any], custom_name: str,
+                      when: str) -> Dict[str, Any]:
+        """<Personal> (S5): the ship has no fitting and the audit never sees it. Replaces a fitting."""
+        holder = {"kind": holder.get("kind"), "id": holder.get("id")}
+        earlier = self.get(item_id)
+        designation = {"item_id": int(item_id), "type_id": int(type_id), "fit_uid": None, "personal": True,
+                       "holder": holder,
+                       "owner": dict(earlier["owner"]) if earlier and earlier.get("owner") else dict(holder),
+                       "custom_name": custom_name or "", "assigned_at": when, "last_seen": when}
+        with self._lock:
+            self.designations[int(item_id)] = designation
+            self.save()
+        return designation
+
+    def set_home(self, item_ids: Iterable[int], home: Optional[Dict[str, Any]]) -> int:
+        """
+        Gives ships with a fitting a Home: {"system_id": N}, ANYWHERE, or None for none.
+        Personal ships have no Home. Returns how many changed.
+        """
+        home = None if not home else (dict(ANYWHERE) if is_anywhere(home) else {"system_id": home_system(home)})
+        with self._lock:
+            changed = 0
+            for item_id in map(int, item_ids):
+                d = self.designations.get(item_id)
+                if d is None or d.get("personal") or d.get("home") == home:
+                    continue
+                if home is None:
+                    d.pop("home", None)
+                else:
+                    d["home"] = dict(home)
+                changed += 1
+            if changed:
+                self.save()
+        return changed
 
     def set_owner(self, item_ids: Iterable[int], owner: Dict[str, Any]) -> int:
         """Gives assigned ships an owner (a linked character or a corporation). Returns how many changed."""
@@ -155,7 +220,8 @@ class ShipDesignations:
     def prune(self, existing_fit_uids: Iterable[int]) -> int:
         """Drops the designations whose fitting is gone. Returns how many went."""
         keep = {int(u) for u in existing_fit_uids}
-        return self.unassign([i for i, d in self.designations.items() if d["fit_uid"] not in keep])
+        return self.unassign([i for i, d in self.designations.items()
+                              if not d.get("personal") and d.get("fit_uid") not in keep])
 
     def clear(self) -> None:
         with self._lock:

@@ -55,6 +55,7 @@ The **Hull** and **System** boxes are searchable: type a few letters to filter.
 
 Your saved fittings, grouped by ship class and hull.
 
+- **Search**: type in the box above the list to show only fittings whose ship class, hull or name contains the text. **Clear** (or Esc) shows them all again.
 - **New Fitting**: paste EFT text from the game. Tick **Shared Doctrine Fitting** for a fitting that's part of a doctrine you'll share ([shared and local](#shared-and-local)).
 - **Edit**, then **Save**: change a fitting's EFT text. Unknown items are listed.
 - If a fit you import or save is identical to one already saved (same hull, modules, drones, fighters and cargo, whatever its name), the tool says which and asks before saving another copy.
@@ -85,9 +86,13 @@ The audit checks only ships that have a fitting assigned, so it never guesses wh
 
 1. Open [Ships](#the-ships-tab) and pick the character.
 2. Select a ship (or several of one hull), choose the fitting, press **Assign Fitting**. The ship's audit appears on the right.
-3. Its owner is set to whoever holds it ([owners](#owners)).
+3. Its owner is set to whoever holds it ([owners](#owners)), and its **Home** to the system it's in.
 
-You can also assign from an audit: a requirement marked **⚪ not checked** has hulls of the right type at its place with no fitting. Right-click it ▸ **Assign the Fitting to**, then pick a ship, or **All**.
+**Home** is the system a ship belongs to (never a station), or **Anywhere** for ships that live in space, like supers and titans. Change it in the **Home** box under Owner. A ship serves the requirements in its Home system; anywhere else it's a soft failure ("bring it back"), never something to buy. Ships assigned before Homes existed show **—** and audit as they always did until you give them one.
+
+Choose **<Personal>** at the top of the Fitting list for ships that aren't doctrine ships (a mining fleet, your own ratter). The audit never looks at them, and **Assigned only** hides them.
+
+You can also assign from an audit: a requirement marked **⚪ not checked** has hulls of the right type in its system with no fitting, perhaps a replacement you've already bought. Right-click it ▸ **Assign the Fitting to**, then pick a ship, or **All**: it gets the fitting and that system as its Home. A ship with no Home offers **Make <system> Its Home** on its right-click menu.
 
 Assignments follow a ship by its item ID, through contracts and trades. They're remembered for 30 days after a ship was last seen in a pull, so lending a ship to someone outside the tool doesn't lose its settings.
 
@@ -97,15 +102,20 @@ Each line has an icon:
 
 - ✅ ready.
 - ⚠ ready, but needs attention: a refit, a better module than the fit asks for, something to take off, a ship away from its place.
+- yellow ❌ a soft failure: the ships exist but are in the wrong place, or the requirement is soft. The character stays ready.
 - ❌ not ready: something is missing.
 - ⚪ not checked: there's a hull at the place with no fitting assigned ([assign it](#assign-your-ships)).
 
-A character shows ❌ if anything fails, else ⚪ if anything isn't checked.
+A character shows ❌ if a hard requirement fails, else ⚪ if one isn't checked. The icons are coloured, and a failing line is tinted: red when it fails, yellow when only a soft requirement does.
+
+**Hard and soft requirements.** A requirement is hard unless you tick **Soft requirement** when adding it (or right-click it in **Library ▸ Role Requirements** ▸ **Make Soft**). A soft requirement is audited the same way, but it only ever warns: the character stays ready, and **Add Every Missing Item** leaves its ships out (right-click to add them). A hard requirement over a wider area (a whole system, or any system) makes the role's requirements for the same fitting inside it soft, so one ship can serve both; the list says "(soft · covered by Jita)". When a package update changes requirements you made hard or soft, you're asked whether to reset them to the fitting manager's.
 
 Under each requirement, its ships:
 
 - **📌 Home**: at the requirement's place. When several are, all are listed and the best one counts.
-- **↗ Away**: assigned and owned, but somewhere else. Ready if its fit is, but flagged.
+- **↔ In the system**: its Home is this system, but it's at another station: move it. A soft failure.
+- **↗ Deployed**: its Home is this system, but it's elsewhere, or with another character: bring it back. A soft failure.
+- **↗ Away (no Home set)**: a ship assigned before Homes, somewhere else. Ready if its fit is, but flagged.
 - **❓ Missing**: assigned, but not seen in any pull. Shows where it was last seen, and offers a replacement.
 
 Under each ship: what's missing, and the refit. **Fit** (move from cargo into a slot), **Stow** (move to cargo, where the fit carries it), **Remove** (take it off: the fit doesn't want it). Ammo and scripts loaded in modules count as cargo.
@@ -113,6 +123,15 @@ Under each ship: what's missing, and the refit. **Fit** (move from cargo into a 
 Above the roles: **📦 Ships still packed** (ships carried inside others that the carrier's requirements don't call for, or one fitted differently from what it should be), and **⛽ Fuel** totals across the doctrine.
 
 A pilot can fly their own variant of a requirement: in **Library ▸ Role Requirements**, select it and **Replace Requirement**. The audit then looks for ships assigned that fitting. **Undo Replacement** goes back.
+
+### Audit one system, onboard and adopt ships
+
+Above the audit tree, **By System** swaps the doctrine box for a system box: **Audit System** shows every character's requirements in that system, across all doctrines, by station. The right-click menus and the shopping list work as in **By Doctrine**. (Requirements for any system aren't listed here.)
+
+Two buttons beside it each open a preview; nothing changes until you press **Apply**:
+
+- **Onboard Ships Here…** (new ships, first-time setup): ships in the system with no fitting. Each is offered the fittings its owner's requirements there use for its hull (already chosen when there's one), **Skip**, or **<Personal>**, with how it would audit. **Next** lists ships whose hull has no saved fitting at all, ticked, to mark them <Personal>. Applied, each gets its fitting, its owner and the system as its Home.
+- **Adopt Ships Here…** (ships moved for a deployment): ships in the system with a fitting whose Home is somewhere else, or not set. Ticked ones get the system as their Home; their fitting doesn't change. Ships whose fitting nothing in the system uses can't be ticked. The warning under the list names any system the move would leave short (it then fails there, until a ship is bought or moved back).
 
 ### Check one ship
 

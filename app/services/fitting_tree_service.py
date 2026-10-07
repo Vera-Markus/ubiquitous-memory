@@ -20,6 +20,31 @@ def fitting_label(record: Dict[str, Any]) -> str:
     return record.get("fit_name") or record.get("hull") or "Unknown Fitting"
 
 
+def filter_groups(groups: Groups, query: str) -> Groups:
+    """
+    The groups whose class, hull or fitting name contains the query, ignoring case.
+    A matching class keeps all its hulls and a matching hull all its fittings;
+    otherwise only the matching fittings are kept. An empty query keeps everything.
+    """
+    query = query.strip().casefold()
+    if not query:
+        return groups
+    kept: Groups = []
+    for class_name, hulls in groups:
+        if query in class_name.casefold():
+            kept.append((class_name, hulls))
+            continue
+        class_hulls = []
+        for hull, records in hulls:
+            if query not in hull.casefold():
+                records = [r for r in records if query in fitting_label(r).casefold()]
+            if records:
+                class_hulls.append((hull, records))
+        if class_hulls:
+            kept.append((class_name, class_hulls))
+    return kept
+
+
 class FittingTreeService:
     def __init__(self, sde_loader: Any):
         self.sde = sde_loader

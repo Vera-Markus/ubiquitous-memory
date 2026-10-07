@@ -44,6 +44,18 @@ def fitting_in_use(requirement: Dict[str, Any]) -> Optional[int]:
     return requirement.get('fit_uid')
 
 
+PRIORITIES = ("hard", "soft")
+
+
+def requirement_priority(requirement: Dict[str, Any]) -> str:
+    """
+    "hard" or "soft" (homes and priorities plan, P1). A hard requirement decides whether
+    the pilot is ready; a soft one is audited in full but only ever warns. Saved only
+    when soft, so older requirements and packages are hard.
+    """
+    return "soft" if requirement.get("priority") == "soft" else "hard"
+
+
 class RoleManager:
     """
     Manages roles that reference fittings via fit_uids.
@@ -186,17 +198,20 @@ class RoleManager:
         return list(self.roles.values())
 
     def add_requirement(self, role_uid: int, fit_uid: int, system_id: Optional[int], location_id: Optional[int],
-                        location_name: Optional[str] = None, added: bool = False) -> int:
+                        location_name: Optional[str] = None, added: bool = False, priority: str = "hard") -> int:
         """
         Adds a requirement to a role: the fitting, wanted in a solar system (None: any)
         and at a station or structure (None: any). location_name is only shown, when
         nothing else knows the location (a structure in someone else's package).
         added marks a pilot's own requirement on a role a package installed: updates
-        ask before removing it, and exports leave it out. Returns the new req_uid.
+        ask before removing it, and exports leave it out. priority: "hard" or "soft".
+        Returns the new req_uid.
         """
         role = self.get_role(role_uid)
         if not role:
             raise KeyError(f"Role UID {role_uid} not found.")
+        if priority not in PRIORITIES:
+            raise ValueError(f"A requirement is hard or soft, not {priority!r}.")
         if not fit_matches_role(role_uid, fit_uid):
             kind, other = ("shared", "local") if is_shared_role_uid(role_uid) else ("local", "shared")
             raise ValueError(f"A {kind} role can't use a {other} fitting. To use this fit here, import it again "
@@ -216,9 +231,25 @@ class RoleManager:
         }
         if added:
             requirement["added"] = True
+        if priority == "soft":
+            requirement["priority"] = "soft"
         role['requirements'].append(requirement)
         self.save_roles()
         return req_uid
+
+    def set_requirement_priority(self, role_uid: int, req_uid: int, priority: str) -> bool:
+        """Makes a requirement hard or soft. False when it already was."""
+        if priority not in PRIORITIES:
+            raise ValueError(f"A requirement is hard or soft, not {priority!r}.")
+        requirement = self._requirement(role_uid, req_uid)
+        if requirement_priority(requirement) == priority:
+            return False
+        if priority == "soft":
+            requirement["priority"] = "soft"
+        else:
+            requirement.pop("priority", None)
+        self.save_roles()
+        return True
 
     def _requirement(self, role_uid: int, req_uid: int) -> Dict[str, Any]:
         role = self.get_role(role_uid)

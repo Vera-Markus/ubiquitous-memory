@@ -8,6 +8,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from app.loaders.role_manager import requirement_priority
 from app.models.asset_models import CarriedShip
 from app.models.audit_models import (AuditResult, BayResult, ImplantSlotResult, PackedShipWarning, RefitMove,
                                      RequirementResult, RequirementStatus, ShipRequirementResult)
@@ -33,6 +34,8 @@ class Node:
     open: bool = False
     values: Tuple = ()
     data: Any = None        # not shown: the result behind a ship row (or a requirement with no ship), for the shopping list
+    tone: Optional[str] = None      # "hard" or "soft" on a failing row: the tree tints it (plan D6)
+    priority: Optional[str] = None  # on a ship row: its requirement's ("hard" or "soft"), for Add Every (P7)
 
 
 # --- names -----------------------------------------------------------------------------
@@ -59,6 +62,19 @@ def location_text(requirement: dict, place_label: PlaceLabel) -> str:
     if requirement.get("system_id"):
         return f" @ {place_label(requirement['system_id'], None)}"
     return ""
+
+
+def area_text(requirement: dict, place_label: PlaceLabel) -> str:
+    """Where a requirement applies, as a name: its station, its system, or "any system"."""
+    return location_text(requirement, place_label)[len(" @ "):] or "any system"
+
+
+def priority_text(requirement: dict, result: Optional[RequirementResult], place_label: PlaceLabel) -> str:
+    """" (soft)", " (soft · covered by Jita)" when a wider hard requirement locks it (P4), or nothing."""
+    covered = result.covered_by if result is not None else None
+    if covered is not None:
+        return f" (soft · covered by {area_text(covered, place_label)})"
+    return " (soft)" if requirement_priority(requirement) == "soft" else ""
 
 
 # --- one ship ------------------------------------------------------------------------------
@@ -131,15 +147,21 @@ def placement_text(ship: ShipRequirementResult) -> str:
         corporation = (ship.holder or {}).get("kind") == "corporation"
         return " · 📌 Home" + (f" ({holder})" if corporation and holder else "")
     if ship.placement == "AWAY":
-        return " · ↗ Away: " + ", ".join(p for p in (holder, ship.where) if p)
+        return " · ↗ Away: " + ", ".join(p for p in (holder, ship.where) if p) + " (no Home set)"
+    if ship.placement == "IN_SYSTEM":
+        return f" · ↔ In the system: {ship.placement_note}"
+    if ship.placement == "DEPLOYED":
+        return " · ↗ Deployed: " + ", ".join(p for p in (holder, ship.where) if p) + f", {ship.placement_note}"
     if ship.placement == "MISSING":
         return f" · ❓ Missing since {(ship.missing_since or '')[:10]}"
     return ""
 
 
 def ship_node(ship: ShipRequirementResult, packed: Dict[int, CarriedShip], where: str = "", notes: str = "",
-              fit_name: str = "") -> Node:
+              fit_name: str = "", priority: str = "hard") -> Node:
+    """priority: the requirement's ("hard" or "soft"); a failing ship row is tinted with it."""
     children: List[Node] = []
+    tone = priority if ship.status == RequirementStatus.FAIL else None
     if ship.placement == "MISSING":
         last = ship.last_seen or {}
         seen = f"Last seen {last.get('where')}" if last.get("where") else "Not seen since it was bound"
@@ -148,9 +170,9 @@ def ship_node(ship: ShipRequirementResult, packed: Dict[int, CarriedShip], where
         children.append(Node(f"❓ {seen}"))
         children.append(Node("❌ Replacement (add by hand)",
                              [Node(f"{s.name} (Missing {s.missing})") for s in ship.shortfalls],
-                             values=(MISSING_ITEMS,)))
+                             values=(MISSING_ITEMS,), tone=priority))
         label = f"{ICONS[ship.status]} {ship.custom_name or ship.ship_name}" + (f" - {fit_name}" if fit_name else "")
-        return Node(label + placement_text(ship), children, data=ship)
+        return Node(label + placement_text(ship), children, data=ship, tone=tone)
     # Fuel has its own row (the Fuel Bay), so it isn't repeated under Missing Items or the refit.
     fuel = bay_result(ship, "fuel_bay")
     fuel_types = {c.type_id for c in fuel.counts} if fuel else set()
@@ -163,7 +185,7 @@ def ship_node(ship: ShipRequirementResult, packed: Dict[int, CarriedShip], where
     if shortfalls:
         children.append(Node(f"{ICONS[RequirementStatus.FAIL]} Missing Items",
                              [Node(f"{s.name} (Missing {s.missing})") for s in shortfalls],
-                             values=(MISSING_ITEMS,)))
+                             values=(MISSING_ITEMS,), tone=priority))
     if moves:
         nothing_to_buy = not ship.shortfalls and not any(b.status == RequirementStatus.FAIL for b in ship.bay_results)
         children.append(refit_node(moves, nothing_to_buy=nothing_to_buy))
@@ -183,9 +205,9 @@ def ship_node(ship: ShipRequirementResult, packed: Dict[int, CarriedShip], where
         children.append(Node(f"📝 {notes.strip()}"))
     # The ship's own name (or its hull when it has none), then the fitting it's audited against
     label = f"{ICONS[ship.status]} {ship.custom_name or ship.ship_name}" + (f" - {fit_name}" if fit_name else "")
-    if ship.placement == "AWAY":
+    if ship.placement in ("AWAY", "DEPLOYED"):
         where = ""                          # the placement says where it is
-    return Node(label + where + placement_text(ship), children, data=ship)
+    return Node(label + where + placement_text(ship), children, data=ship, tone=tone)
 
 
 # --- one requirement -------------------------------------------------------------------------
@@ -198,23 +220,32 @@ def requirement_node(requirement: dict, hull: str, result: Optional[RequirementR
     hull is the fitting in use; replacing names the original's hull when the pilot replaced it.
     """
     where = location_text(requirement, place_label)
-    text = f"{hull}{where}" + (f" (replacing {replacing})" if replacing else "")
+    text = f"{hull}{where}" + (f" (replacing {replacing})" if replacing else "") + priority_text(requirement, result, place_label)
     if result is None:
         return Node(f"{NOT_AUDITED} {text}")
     if result.implant_set is not None:
-        return implant_set_node(text, result)
+        node = implant_set_node(text, result)
+        node.tone = result.failure
+        return node
     if not result.ship_results:
         reason = result.message or "No ship found"
         # The requirement row carries its result, so the shopping list can offer the missing hull
         # (and, when NOT CHECKED, the hulls to assign: right-click).
-        icon = ICONS[RequirementStatus.NOT_CHECKED if result.status == RequirementStatus.NOT_CHECKED
-                     else RequirementStatus.FAIL]
-        return Node(f"{ICONS[result.status]} {text}", [Node(f"{icon} {reason}")], data=result)
+        not_checked = result.status == RequirementStatus.NOT_CHECKED
+        icon = ICONS[RequirementStatus.NOT_CHECKED if not_checked else RequirementStatus.FAIL]
+        return Node(f"{ICONS[result.status]} {text}", [Node(f"{icon} {reason}", tone=None if not_checked else result.priority)],
+                    data=result, tone=result.failure)
     # Under "Any" location each ship shows where it is (D16).
     any_location = not where
-    ships = [ship_node(s, packed, f" · {ship_location(s)}" if any_location else "", notes, fit_name)
+    ships = [ship_node(s, packed, f" · {ship_location(s)}" if any_location else "", notes, fit_name, result.priority)
              for s in result.ship_results]
-    return Node(f"{ICONS[result.status]} {text} · {result.ships_ready} of {result.ships_listed} ready", ships)
+    for ship in ships:
+        ship.priority = result.priority
+    if result.unassigned_hulls:
+        # A missing ship, and hulls with no fitting that may be its replacement (23.4): right-click to assign.
+        ships.insert(0, Node(f"{ICONS[RequirementStatus.NOT_CHECKED]} {result.message}"))
+    return Node(f"{ICONS[result.status]} {text} · {result.ships_ready} of {result.ships_listed} ready", ships,
+                tone=result.failure, data=result if result.unassigned_hulls else None)
 
 
 def implant_set_node(text: str, result: RequirementResult) -> Node:
@@ -241,13 +272,19 @@ def slot_text(slot: ImplantSlotResult) -> str:
 # --- characters ------------------------------------------------------------------------------
 
 def character_status(result: Optional[AuditResult], packed: Sequence[PackedShipWarning]) -> Optional[RequirementStatus]:
-    """FAIL if a requirement isn't ready, WARN if anything needs attention (packed ships included), else PASS."""
+    """
+    FAIL if a hard requirement isn't ready, WARN if anything needs attention (a soft requirement
+    that isn't ready, packed ships), else PASS. A soft requirement never makes it worse than WARN (P2).
+    """
     if result is None:
         return None
     if not result.overall_pass:
-        failed = any(r.status == RequirementStatus.FAIL for r in result.requirement_results)
+        failed = any(r.failure == "hard" for r in result.requirement_results)
         return RequirementStatus.FAIL if failed else RequirementStatus.NOT_CHECKED
-    if packed or any(r.status == RequirementStatus.WARN for r in result.requirement_results):
+    attention = any(r.status == RequirementStatus.WARN or r.failure == "soft"
+                    or (not r.counts_for_readiness and r.status != RequirementStatus.PASS)
+                    for r in result.requirement_results)
+    if packed or attention:
         return RequirementStatus.WARN
     return RequirementStatus.PASS
 

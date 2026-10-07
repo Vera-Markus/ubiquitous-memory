@@ -24,6 +24,7 @@ class ShipRow:
     location: str                       # its name
     aboard: str                         # "hangar 2 (Doctrine Subcaps)", "ship maintenance bay of 'Big Brother'"
     carrier_item_id: Optional[int] = None       # the ship it's packed in (plan 19.1: nested under it)
+    system_id: Optional[int] = None     # its solar system (a first assignment makes it the Home, H2)
     fit_uid: Optional[int] = None
     fit_name: str = ""
     owner: Optional[Dict[str, Any]] = None      # {kind, id}: who the ship belongs to (plan 18.2)
@@ -31,6 +32,8 @@ class ShipRow:
     away_from_owner: bool = False               # held by someone other than its owner: give it back
     result: Optional[ShipRequirementResult] = None
     note: str = ""                      # why a designated ship wasn't audited
+    home: Optional[Dict[str, Any]] = None       # {"system_id"} or {"anywhere": True}; None: no Home (H1)
+    personal: bool = False                      # <Personal>: never audited (S5)
 
 
 def hangar_of(aboard: str) -> str:
@@ -80,8 +83,17 @@ def ship_rows(context: Any, holder: Dict[str, Any], designations: Any, fitting_m
     for sighting in context.universe.ships_held_by({"kind": holder["kind"], "id": int(holder["id"])}):
         row = ShipRow(item_id=sighting.item_id, type_id=sighting.type_id, hull=sde.get_type_name(sighting.type_id),
                       custom_name=sighting.custom_name, location_id=sighting.root_location_id,
+                      system_id=sighting.system_id,
                       location=sde.location_label(sighting.root_location_id), aboard=sighting.aboard,
                       carrier_item_id=sighting.carrier_item_id)
+        if designations is not None and designations.is_personal(sighting.item_id):
+            row.personal = True
+            owner = designations.owner(sighting.item_id) or here
+            row.owner = {"kind": owner.get("kind"), "id": int(owner.get("id") or 0)}
+            row.owner_name = holder_name(row.owner, names)
+            row.away_from_owner = row.owner != here
+            rows.append(row)
+            continue
         fit_uid = designations.fit_uid(sighting.item_id) if designations is not None else None
         if fit_uid is not None:
             owner = designations.owner(sighting.item_id) or here
@@ -90,6 +102,7 @@ def ship_rows(context: Any, holder: Dict[str, Any], designations: Any, fitting_m
             row.away_from_owner = row.owner != here
             fitting = fitting_manager.get_fitting(fit_uid)
             row.fit_uid = fit_uid
+            row.home = designations.home(sighting.item_id)
             row.fit_name = (fitting or {}).get("fit_name", f"fitting {fit_uid}")
             if fitting is None:
                 row.note = "Its fitting no longer exists"
