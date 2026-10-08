@@ -73,3 +73,4 @@ class AuditSnapshot:
     assigned_role_uids: List[int]
     carried_ships: List[CarriedShip] = field(default_factory=list)   # filled from step 1.7
     clones: Optional[Dict[str, Any]] = None     # data/clones/<id>.json; None when not pulled (plan 15.2)
+    skills: Optional[Dict[int, int]] = None     # {skill: level} from data/skills/<id>.json; None when not pulled (ESI plan 26.5)

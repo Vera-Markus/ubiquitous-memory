@@ -10,23 +10,34 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 from app.gui import themed_dialogs as messagebox
 
-from app.version import __version__
+from app.version import BUILD_DATE, __version__
 from app.logging_config import GUI_LOGGER, session_log_path, start_session_log
 from app.gui.dialogs.log_viewer import LogViewer
 from app.gui.dialogs.confirm_typed_dialog import ConfirmTypedDialog
 from app.gui.dialogs.progress_dialog import ProgressDialog
 from app.gui.dialogs.remove_character_dialog import RemoveCharacterDialog
+from app.gui.dialogs.send_to_client_dialog import SendToClientDialog
 from app.gui.dialogs.structure_name_dialog import StructureNameDialog
 
 from app.loaders.fitting_loader import EVEdbLoader
 from app.loaders.fitting_manager import fittingManager
 from app.esi_service.auth_service import AuthService
 from app.esi_service.esi_settings import ESI_BASE_URL
+from app.esi_service.game_client import GameClient
+from app.services.prices import PriceBook
+from app.services.capitals import Galaxy, PublicContracts
+from app.esi_service.game_fittings import FittingBackups, GameFittings
+from app.services.losses import LossBook
 from app.esi_service.real_esi_client import RealESIClient
 from app.loaders.ship_designations import ShipDesignations
 from app.esi_service.oauth_config import CLIENT_ID, REDIRECT_URI, SCOPES
 from app.services.export_resolved_locations import save_manual_location, skip_location_prompt, structures_to_name
-from app.services.pull_state_service import AUTO_PULL_INTERVAL_SECONDS, PullStateService
+from app.services.pull_state_service import AUTO_PULL_INTERVAL_SECONDS, AUTO_PULL_RETRY_SECONDS, PullStateService
+from app.services.pull_sequence import Hooks
+from app.services import esi_features
+from app.esi_service import server_status as server_status_module
+from app.esi_service.server_status import ServerStatus
+from app.gui.server_status_icon import ServerStatusIcon
 from app.services.asset_pipeline_service import AssetPipelineService
 from app.services.reset_service import ResetService
 from app.services.character_removal_service import CharacterRemovalService
@@ -47,6 +58,22 @@ from app.gui import style as ui_style
 
 MAX_LOG_LINES = 2000        # Debug ▸ View Logs shows the most recent lines; the session file keeps them all
 
+# Shown once, and again after a Full Reset (ESI features plan 25.6, D11.10).
+STATUS_NOTICE = ("The app now checks Tranquility's status before it calls CCP.\n\n"
+                 "The lamp on the right of the tab row shows it: green online, amber with problems "
+                 "(VIP mode, or ESI degraded), red offline, grey unknown. A red dot means CCP's status "
+                 "page has a new message: hover over the lamp to read it, click it to open the page.\n\n"
+                 "While Tranquility is down, and during daily downtime (10:55–11:15 UTC), buttons that "
+                 "call CCP are off; everything else keeps working. Automatic pulls wait and try again "
+                 "every 5 minutes.")
+
+
+PUBLIC_CONTRACTS_WARNING = (
+    "Find a Hull… will also search public contracts, in every region within 5 capital jumps.\n\n"
+    "This is slow the first time: what each contract holds is read one at a time, at a pace ESI accepts. "
+    "A wide search can take 5 to 10 minutes. The window fills in nearest first, and contracts read once "
+    "aren't read again.\n\nTurn public contracts on?")
+
 
 class EVEFleetGUI:
     def __init__(self, root):
@@ -58,6 +85,11 @@ class EVEFleetGUI:
         ui_style.apply(self.root, ui_style.load_theme(CONFIG_DIR))     # the saved colour theme (Options ▸ Appearance)
 
         self._db_job_running = False    # a database check or download is in progress
+        self._login_running = False     # Characters ▸ Add Character is waiting for the browser
+        self._auto_pull_pending = False
+        self._status_checking = False
+        # Tranquility's status, checked before anything calls CCP (ESI features plan, Phase 25)
+        self.server_status = ServerStatus()
 
         # Logging first, so every line from here on reaches the session file (F10).
         self.log_lines = deque(maxlen=MAX_LOG_LINES)
@@ -79,6 +111,13 @@ class EVEFleetGUI:
         self.fitting_manager = fittingManager(str(GENERATED_DIR / "fittings.json"))
         self.auth_service = AuthService(self.CLIENT_ID, self.REDIRECT_URI)
         self.esi_client = RealESIClient(self.ESI_BASE_URL, self.auth_service)
+        self.game_client = GameClient(self.auth_service)       # Open in the game client (plan 27.1)
+        self.price_book = PriceBook()                          # hub prices for the shopping list (plan 28.1)
+        self._galaxy = None                                    # systems and capital ranges, read when needed (28.6)
+        self.public_contracts = PublicContracts()              # public contract lists and items, cached (28.6)
+        self.game_fittings = GameFittings(self.auth_service)   # in-game fitting sync (plan 29)
+        self.fitting_backups = FittingBackups()                # fits deleted from the game, 14 days (29.5)
+        self.loss_book = LossBook()                            # killmails matched to ships (plan 30)
         self.pull_state_path = CONFIG_DIR / "pull_state.json"
         
         # Initialize Pull State Service
@@ -119,6 +158,8 @@ class EVEFleetGUI:
         # Initialize remaining services and UI
         self._setup_services()
         self._setup_ui()
+        self.root.after(100, self._poll_server_status)
+        self.root.after(800, self._show_status_notice)
 
     def _setup_services(self):
         """Initializes the remaining application services."""
@@ -223,6 +264,9 @@ class EVEFleetGUI:
 
     def _download_database(self):
         """Downloads the EVE database with the progress window. Returns (success, message)."""
+        allowed, why = self._may_call_ccp()         # D11.9: nothing goes to CCP during an outage
+        if not allowed:
+            return False, why
         self._db_job_running = True
         try:
             return self._run_with_progress("Downloading the EVE database",
@@ -252,6 +296,8 @@ class EVEFleetGUI:
     def _handle_check_db_update(self):
         """Tools ▸ Check for DB Update: ask the server, then offer the download only if it's worth it."""
         if self._db_job_running:
+            return
+        if not self._guard("Check for DB Update"):
             return
         self._db_job_running = True
         try:
@@ -343,6 +389,13 @@ class EVEFleetGUI:
         from app.gui.dialogs.user_guide import UserGuideWindow
         UserGuideWindow.show(self.root)
 
+    def _handle_about(self):
+        """Help ▸ About: the version, and when this program was built."""
+        built = f"Built {BUILD_DATE}" if BUILD_DATE else "Running from source (not a release build)"
+        messagebox.showinfo("About", f"EVE Fleet Management Tool\nVersion {__version__}\n{built}\n\n"
+                            "MIT licence. An unofficial fan project, not affiliated with or endorsed by CCP hf. "
+                            "EVE Online and all related names, images and data are trademarks or property of CCP hf.")
+
     def _setup_menu(self):
         """Sets up the main application menu bar."""
         self.menu_bar = tk.Menu(self.root)
@@ -376,6 +429,7 @@ class EVEFleetGUI:
         self.help_menu = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
         self.help_menu.add_command(label="User Guide", accelerator="F1", command=self._handle_user_guide)
+        self.help_menu.add_command(label="About", command=self._handle_about)
         self.root.bind_all("<F1>", lambda e: self._handle_user_guide())
 
     def _setup_ui(self):
@@ -385,6 +439,10 @@ class EVEFleetGUI:
         # Notebook
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(pady=10, fill=tk.BOTH, expand=True)
+
+        # Tranquility's status, in the empty space on the right of the tab row (plan 25.3)
+        self.status_icon = ServerStatusIcon(self.root, self.server_status)
+        self.status_icon.place(in_=self.notebook, relx=1.0, x=-6, y=1, anchor="ne")
         
         # Tabs
         self.options_tab = ttk.Frame(self.notebook)
@@ -423,6 +481,15 @@ class EVEFleetGUI:
         # --- Left Side: Connected Characters ---
         char_frame = ttk.LabelFrame(paned_window, text="Connected Characters", padding=(10, 10))
         paned_window.add(char_frame, width=250)
+        # The character list takes a quarter of the width the first time the tab is drawn; the divider
+        # can still be dragged.
+        self._options_split_placed = False
+
+        def place_split(event):
+            if not self._options_split_placed and event.width > 100:
+                self._options_split_placed = True
+                paned_window.sash_place(0, int(event.width * 0.25), 0)
+        paned_window.bind("<Configure>", place_split, add="+")
 
         ttk.Label(char_frame, text="Add characters from Characters ▸ Add Character.",
                  foreground=ui_style.MUTED, wraplength=220, justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 5))
@@ -438,12 +505,19 @@ class EVEFleetGUI:
         self.character_listbox.config(yscrollcommand=scrollbar.set)
 
         # --- Right Side: pull status and controls ---
-        right_side_frame = ttk.Frame(paned_window)
-        paned_window.add(right_side_frame)
+        # Two columns, each as wide as its panels: pulling on the left (Pull All, Asset Status,
+        # Auto Pull), settings on the right (Appearance, ESI Features). The rest is left free.
+        right_outer = ttk.Frame(paned_window)
+        paned_window.add(right_outer)
+        right_side_frame = ttk.Frame(right_outer)
+        right_side_frame.pack(anchor=tk.NW, padx=5)
+        pull_column = ttk.Frame(right_side_frame)
+        pull_column.grid(row=0, column=0, sticky="nw", padx=(0, 10))
+        settings_column = ttk.Frame(right_side_frame)
+        settings_column.grid(row=0, column=1, sticky="nw")
 
         # Asset cooldown/status panel
-        status_panel = ttk.LabelFrame(right_side_frame, text="Asset Status", padding=(5, 5))
-        status_panel.pack(fill=tk.X, pady=2, padx=5)
+        status_panel = ttk.LabelFrame(pull_column, text="Asset Status", padding=(5, 5))
 
         status_info_frame = ttk.Frame(status_panel)
         status_info_frame.pack(fill=tk.X)
@@ -457,8 +531,7 @@ class EVEFleetGUI:
         self.lbl_next_pull.pack(anchor=tk.W)
 
         # Auto Pull panel
-        auto_pull_panel = ttk.LabelFrame(right_side_frame, text="Auto Pull", padding=(5, 5))
-        auto_pull_panel.pack(fill=tk.X, pady=2, padx=5)
+        auto_pull_panel = ttk.LabelFrame(pull_column, text="Auto Pull", padding=(5, 5))
 
         self.chk_auto_pull = ttk.Checkbutton(
             auto_pull_panel, 
@@ -473,8 +546,10 @@ class EVEFleetGUI:
         self.lbl_next_auto_pull.pack(pady=2, padx=5, anchor=tk.W)
 
         # Pull All panel
-        pull_all_panel = ttk.LabelFrame(right_side_frame, text="Pull All", padding=(5, 5))
-        pull_all_panel.pack(fill=tk.X, pady=2, padx=5)
+        pull_all_panel = ttk.LabelFrame(pull_column, text="Pull All", padding=(5, 5))
+        # Pull All first, then what it's done and will do.
+        for panel in (pull_all_panel, status_panel, auto_pull_panel):
+            panel.pack(fill=tk.X, pady=2)
 
         self.btn_pull_all = ttk.Button(
             pull_all_panel, 
@@ -482,19 +557,69 @@ class EVEFleetGUI:
             command=self._handle_pull_all_click
         )
         self.btn_pull_all.pack(pady=5, padx=5, fill=tk.X)
+        # What a pull is doing: safe mode's countdown, characters skipped (plan 25.4)
+        self.lbl_pull_status = ttk.Label(pull_all_panel, text="", foreground=ui_style.MUTED, wraplength=380,
+                                         justify=tk.LEFT)
+        self.lbl_pull_status.pack(padx=5, anchor=tk.W)
 
         # Appearance panel: the colour theme, applied straight away and remembered
-        appearance_panel = ttk.LabelFrame(right_side_frame, text="Appearance", padding=(5, 5))
-        appearance_panel.pack(fill=tk.X, pady=2, padx=5)
+        appearance_panel = ttk.LabelFrame(settings_column, text="Appearance", padding=(5, 5))
+        appearance_panel.pack(fill=tk.X, pady=2)
         ttk.Label(appearance_panel, text="Theme:").pack(side=tk.LEFT, padx=5)
         self.theme_combo = ttk.Combobox(appearance_panel, values=list(ui_style.THEMES), state="readonly", width=16)
         self.theme_combo.set(ui_style.current_theme)
         self.theme_combo.pack(side=tk.LEFT, padx=5, pady=5)
         self.theme_combo.bind("<<ComboboxSelected>>", self._handle_theme_selected)
 
+        # ESI Features: one switch per feature, remembered (ESI features plan 26.2)
+        features_panel = ttk.LabelFrame(settings_column, text="ESI Features", padding=(5, 5))
+        features_panel.pack(fill=tk.X, pady=2)
+        self.feature_vars, self.feature_checks = {}, {}
+        for key, spec in esi_features.shown().items():
+            row = ttk.Frame(features_panel)
+            row.pack(fill=tk.X, padx=(24 if spec.get("under") else 5, 5), pady=1)
+            var = tk.BooleanVar(value=esi_features.stored(key, CONFIG_DIR))
+            check = ttk.Checkbutton(row, text=spec["label"], variable=var,
+                                    command=lambda k=key: self._handle_feature_toggle(k))
+            check.pack(side=tk.LEFT)
+            self.feature_vars[key], self.feature_checks[key] = var, check
+            if key == "prices":
+                ttk.Label(row, text="Trade hub:").pack(side=tk.LEFT, padx=(12, 4))
+                self.hub_combo = ttk.Combobox(row, values=list(esi_features.HUBS), state="readonly", width=12)
+                self.hub_combo.set(esi_features.hub(CONFIG_DIR))
+                self.hub_combo.pack(side=tk.LEFT)
+                self.hub_combo.bind("<<ComboboxSelected>>", self._handle_hub_selected)
+        self._update_feature_checks()
+
         # 3. Initialize Character Loading
         self._initialize_connected_characters()
         self._start_cooldown_timer()
+
+    def _handle_feature_toggle(self, key: str):
+        """Options ▸ ESI Features: a switch, saved at once. The next pull or audit follows it."""
+        on = self.feature_vars[key].get()
+        if key == "public_contracts" and on and not messagebox.askyesno(
+                "Public Contracts", PUBLIC_CONTRACTS_WARNING):
+            self.feature_vars[key].set(False)
+            return
+        esi_features.set_enabled(key, on, CONFIG_DIR)
+        self._update_feature_checks()
+        self.fittings_view.show_game_buttons()
+        self._log(f"[INFO] {esi_features.FEATURES[key]['label']}: {'on' if on else 'off'}. "
+                  "Run the audit again to see the change.")
+
+    def _update_feature_checks(self):
+        """A sub-switch is greyed out while its feature is off."""
+        for key, check in self.feature_checks.items():
+            parent = esi_features.FEATURES[key].get("under")
+            if parent:
+                check.state(["!disabled"] if self.feature_vars.get(parent, tk.BooleanVar()).get() else ["disabled"])
+
+    def _handle_hub_selected(self, event=None):
+        esi_features.set_hub(self.hub_combo.get(), CONFIG_DIR)
+        self.hub_combo.selection_clear()
+        self._log(f"[INFO] Prices from {esi_features.hub(CONFIG_DIR)}.")
+        self.audit_view.reprice()
 
     def _handle_theme_selected(self, event=None):
         """Options ▸ Appearance: redraws every open window in the chosen theme and saves it."""
@@ -507,15 +632,23 @@ class EVEFleetGUI:
         self._log(f"[INFO] Theme: {theme}")
 
     def _set_add_character_enabled(self, enabled: bool):
-        """Characters ▸ Add Character is greyed out while a login is running."""
-        self.characters_menu.entryconfig("Add Character", state=tk.NORMAL if enabled else tk.DISABLED)
+        """Characters ▸ Add Character is greyed out while a login is running (and during an outage)."""
+        self._login_running = not enabled
+        self._update_ccp_controls()
+
+    def _update_ccp_controls(self):
+        """Menu entries that call CCP are off while a login runs, or while Tranquility is down (D11.9)."""
+        locked = self.server_status.locked()
+        self.characters_menu.entryconfig("Add Character",
+                                         state=tk.DISABLED if locked or self._login_running else tk.NORMAL)
+        self.tools_menu.entryconfig("Check for DB Update", state=tk.DISABLED if locked else tk.NORMAL)
 
     def _handle_remove_character(self):
         """Characters ▸ Remove Character: choose a character, review what goes, remove."""
         if self.asset_pipeline_service.is_running:
             messagebox.showwarning("Remove Character", "An asset pull is running. Try again when it finishes.")
             return
-        if str(self.characters_menu.entrycget("Add Character", "state")) == "disabled":
+        if self._login_running:
             messagebox.showwarning("Remove Character", "A login is in progress. Try again when it finishes.")
             return
         characters = {cid: self.auth_service.index.get(cid, f"Character {cid}") for cid in self.auth_service.profiles}
@@ -546,6 +679,8 @@ class EVEFleetGUI:
 
     def _start_login_thread(self):
         """Characters ▸ Add Character: starts the SSO login flow in a separate thread."""
+        if not self._guard("Add Character", login=True):
+            return
         self._log("[INFO] Starting CCP Login flow...")
         self._set_add_character_enabled(False)
         
@@ -631,6 +766,9 @@ class EVEFleetGUI:
             self._log("[WARNING] Pull All requested during cooldown.")
             return
 
+        if not self._guard("Pull All"):
+            return
+
         self._log("Pull All pressed")
         self.btn_pull_all.config(state=tk.DISABLED)     # at once; the 1 s timer keeps it in step after that
         threading.Thread(target=self._execute_full_pull, daemon=True).start()
@@ -650,20 +788,23 @@ class EVEFleetGUI:
 
         running = self.asset_pipeline_service.is_running
         remaining = self.pull_state_service.cooldown_remaining()
+        locked = self.server_status.locked()
         if running:
             self.lbl_next_pull.config(text="Pulling…", foreground=ui_style.INFO)
         elif remaining > 0:
             mins, secs = divmod(int(remaining), 60)
             self.lbl_next_pull.config(text=f"{mins}m {secs:02d}s", foreground=ui_style.WARN)
+        elif locked:
+            self.lbl_next_pull.config(text="Waiting for Tranquility", foreground=ui_style.WARN)
         else:
             self.lbl_next_pull.config(text="Ready", foreground=ui_style.TEXT)
-        self.btn_pull_all.config(state=tk.DISABLED if running or remaining > 0 else tk.NORMAL)
+        self.btn_pull_all.config(state=tk.DISABLED if running or remaining > 0 or locked else tk.NORMAL)
+        self._update_ccp_controls()
 
         # Update the Auto Pull countdown
         if self.auto_pull_var.get():
-            last_auto = self.pull_state_service.last_auto_pull_time
-            if last_auto:
-                next_time = last_auto + timedelta(seconds=AUTO_PULL_INTERVAL_SECONDS)
+            next_time = self.pull_state_service.next_auto_pull()
+            if next_time:
                 remaining_auto = (next_time - datetime.now()).total_seconds()
                 if remaining_auto > 0:
                     mins, secs = divmod(int(remaining_auto), 60)
@@ -678,52 +819,353 @@ class EVEFleetGUI:
         self.root.after(1000, self._update_cooldown_ui)
 
     def _check_auto_pull_schedule(self):
-        """Checks if it is time to trigger the automatic pull."""
-        if not self.auto_pull_var.get():
+        """Starts the automatic pull when it's due: an hour after the last successful one, or a retry (plan 25.5)."""
+        if not self.auto_pull_var.get() or self._auto_pull_pending:
             return
 
         if self.asset_pipeline_service.is_running:
             return
 
         now = datetime.now()
-        last_auto = self.pull_state_service.last_auto_pull_time
-
-        # If it's never run, or if the interval has passed since the last one
-        if last_auto is None or (now - last_auto).total_seconds() >= AUTO_PULL_INTERVAL_SECONDS:
-            # Conflict Management: skip if a manual pull is still in its cooldown
-            if self.pull_state_service.is_in_cooldown():
-                self._log("Auto Pull skipped due to recent manual pull.")
-                # Update last_auto_pull_time to prevent spamming the log every second
-                self.pull_state_service.last_auto_pull_time = now
-                self.pull_state_service.save()
-                return
-
-            self._log(f"[AUTO] {AUTO_PULL_INTERVAL_SECONDS // 60} minute interval reached. Triggering scheduled pull.")
-            # Reset the timer immediately to avoid double-triggering before the process finishes
+        if not self.pull_state_service.auto_pull_due(now):
+            return
+        # Conflict Management: skip if a manual pull is still in its cooldown
+        if self.pull_state_service.is_in_cooldown():
+            self._log("Auto Pull skipped due to recent manual pull.")
+            # Update last_auto_pull_time to prevent spamming the log every second
             self.pull_state_service.last_auto_pull_time = now
             self.pull_state_service.save()
-            
-            # Run the existing pipeline in a background thread
-            threading.Thread(target=self._execute_full_pull, daemon=True).start()
+            return
 
-    def _execute_full_pull(self):
+        self._auto_pull_pending = True
+        threading.Thread(target=self._execute_auto_pull, daemon=True).start()
+
+    def _execute_auto_pull(self):
+        """
+        The automatic pull, on a worker thread. While Tranquility is down it's held
+        silently (D11.2) and tried again every 5 minutes; the hourly timer restarts
+        from the pull that succeeds (D11.3).
+        """
+        try:
+            allowed, why = self._may_call_ccp()
+            if not allowed:
+                self._schedule_auto_retry(f"Auto Pull is waiting: {why}")
+                return
+            self._log(f"[AUTO] {AUTO_PULL_INTERVAL_SECONDS // 60} minute interval reached. Triggering scheduled pull.")
+            success = self._execute_full_pull(manual=False)
+            if success:
+                self.pull_state_service.last_auto_pull_time = datetime.now()
+                self.pull_state_service.auto_retry_at = None
+                self.pull_state_service.save()
+            elif success is False:
+                self._schedule_auto_retry("Auto Pull didn't finish")
+        finally:
+            self._auto_pull_pending = False
+
+    def _schedule_auto_retry(self, why: str):
+        at = datetime.now() + timedelta(seconds=AUTO_PULL_RETRY_SECONDS)
+        self.pull_state_service.auto_retry_at = at
+        self._log(f"[AUTO] {why}. Next try at {at:%H:%M}.")
+
+    def _execute_full_pull(self, manual: bool = True):
         """
         Runs the asset pull pipeline. Callers run this on a worker thread; _log is
-        thread-safe and the dialogs are handed to the Tk thread.
+        thread-safe and the dialogs are handed to the Tk thread. A manual pull asks
+        before retrying and reports how it went; an automatic one shows no dialog at
+        all (D11.2, Q25.1): the status line and Last Pull say how it went.
         """
-        success = self.asset_pipeline_service.execute_full_pull(self._log)
+        success = self.asset_pipeline_service.execute_full_pull(self._log, self._pull_hooks(manual))
+        self._set_pull_status("")
         if success is None:
-            return              # another pull was already running; the service logged it
+            return None             # another pull was already running; the service logged it
+        result = self.asset_pipeline_service.last_result
         if success:
             self.pull_state_service.last_pull_time = datetime.now()
             self.pull_state_service.save()      # the service has logged the success line
-            self.root.after(0, self._after_successful_pull)
+            if manual:
+                self.root.after(0, lambda: self._after_successful_pull(result))
+            else:
+                skipped = ", ".join(self.auth_service.index.get(c, c) for c in result.dropped) if result else ""
+                self._set_pull_status(f"Automatic pull at {datetime.now():%H:%M}: done"
+                                      + (f"; skipped {skipped}" if skipped else "") + ".")
+        elif result is not None and result.held:
+            why = self.server_status.reason() or "Tranquility isn't answering."
+            self._log(f"[WARNING] The pull is on hold: {why}")
+            if manual:
+                self.root.after(0, lambda: messagebox.showwarning("Pull All", f"The pull is on hold.\n\n{why}\n\n"
+                                                                  "Characters pulled before it stopped are saved."))
+        elif result is not None and result.stopped:
+            self._log("[INFO] The pull was stopped; characters pulled before it stopped are saved.")
         else:
             self._log("[ERROR] Asset pull pipeline failed.")
-            self.root.after(0, lambda: messagebox.showerror("Error", "An error occurred during the asset pull pipeline."))
+            if manual:
+                self.root.after(0, lambda: messagebox.showerror("Error", "An error occurred during the asset pull pipeline."))
+        return success
 
-    def _after_successful_pull(self):
-        messagebox.showinfo("Success", "Asset pull and aggregation completed successfully.")
+    # --- the safe-mode sequence and Tranquility's status (ESI features plan, Phase 25) -----------
+
+    def _pull_hooks(self, manual: bool) -> Hooks:
+        """What the pull sequence needs from the app (plan 25.4)."""
+        status = self.server_status
+
+        def ask_retry_blocking(char, outcome) -> bool:
+            answer, done = {}, threading.Event()
+
+            def ask():
+                try:
+                    name = self.auth_service.index.get(char, char)
+                    why = outcome.message or (f"ESI error {outcome.status}" if outcome.status else "ESI didn't answer")
+                    answer["yes"] = messagebox.askyesno(
+                        "Pull Failed", f"The pull failed on {name}: {why}.\n\nThe rest of the pull has stopped. "
+                        "Retry all characters?")
+                finally:
+                    done.set()
+
+            self.root.after(0, ask)
+            done.wait()
+            return answer.get("yes", False)
+
+        async def ask_retry(char, outcome) -> bool:
+            return await asyncio.to_thread(ask_retry_blocking, char, outcome)
+
+        def esi_up() -> bool:
+            try:
+                status.check(page=True)
+            except Exception as e:
+                self._log(f"[WARNING] Couldn't check Tranquility's status: {e}")
+            self._refresh_status_icon_soon()
+            return not status.locked()
+
+        def page_has_error():
+            page = server_status_module.fetch_page()
+            status.apply_page(page)
+            self._refresh_status_icon_soon()
+            if not page.ok:
+                return None
+            if page.has_error:
+                status.hold()
+                return True
+            return False
+
+        return Hooks(manual=manual, ask_retry=ask_retry, esi_up=esi_up, page_has_error=page_has_error,
+                     notify=self._set_pull_status)
+
+    def _set_pull_status(self, text: str):
+        """The pull panel's status line; anything but the countdown also goes to the log. Any thread."""
+        if text and not text.startswith(("Safe mode: checking", "Pulling ")):
+            self._log(f"[INFO] {text}")
+        try:
+            self.root.after(0, lambda: self.lbl_pull_status.config(text=text))
+        except (RuntimeError, tk.TclError):
+            pass        # the window is closing
+
+    def _may_call_ccp(self, login: bool = False):
+        """
+        Checks Tranquility's status (unless it was checked in the last 30 s) and says
+        whether calls to CCP may go ahead: (allowed, why). Any thread.
+        """
+        try:
+            self.server_status.ensure_fresh()
+        except Exception as e:
+            self._log(f"[WARNING] Couldn't check Tranquility's status: {e}")
+        allowed, why = self.server_status.allow(login=login)
+        self._refresh_status_icon_soon()
+        return allowed, why
+
+    def _guard(self, title: str, login: bool = False) -> bool:
+        """A manual action that calls CCP: allowed, or a pop-up saying why not (D11.1)."""
+        allowed, why = self._may_call_ccp(login)
+        if not allowed:
+            self._log(f"[INFO] {title}: not now. {why}")
+            messagebox.showwarning(title, why)
+        return allowed
+
+    @property
+    def galaxy(self) -> Galaxy:
+        """Systems, stations and capital jump ranges (ESI features plan 28.6), read on first use."""
+        if self._galaxy is None:
+            self._galaxy = Galaxy(EVE_DB_PATH, self.evedb_loader.system_of)
+        return self._galaxy
+
+    def find_a_hull(self, hull_type_id, fitting=None, pilot=None, centre=None):
+        """The Capital Contract Search window (28.6)."""
+        from app.gui.dialogs.capital_search import CapitalSearchWindow
+        if not self._guard("Find a Hull"):
+            return None
+        self.capital_search = CapitalSearchWindow(self, hull_type_id, fitting, pilot, centre)
+        return self.capital_search
+
+    def open_in_game(self, title: str, what: str, send, pilot=None, steps=None, start: int = 0):
+        """
+        Open in the game client (plan 27.1): the character chooser for one window or route.
+        send(game_client, char_id) is the call; pilot, the line's pilot, is chosen at first.
+        steps: [(what, send)] to go through with Open Next (contracts, 28.5), from `start`.
+        """
+        if not esi_features.enabled("client"):
+            return None
+        characters = {str(c): self.auth_service.index.get(str(c), f"Character {c}")
+                      for c in self.auth_service.profiles}
+        if not characters:
+            messagebox.showinfo(title, "No character is logged in: add one under Characters first.")
+            return None
+        if not self._guard(title):
+            return None
+        self.client_dialog = SendToClientDialog(self, title, what, characters, send, pilot, steps, start)
+        return self.client_dialog
+
+    def _refresh_status_icon_soon(self):
+        try:
+            self.root.after(0, self._refresh_status_icon)
+        except (RuntimeError, tk.TclError):
+            pass
+
+    def _refresh_status_icon(self):
+        icon = getattr(self, "status_icon", None)
+        if icon is not None:
+            icon.refresh()
+
+    def _poll_server_status(self):
+        """Every 30 s: the icon's own checks, on a worker thread when they're due (D11.16)."""
+        if not self._status_checking and self.server_status.status_due(server_status_module.utc_now()):
+            self._status_checking = True
+
+            def work():
+                try:
+                    first = self.server_status.reading is None
+                    before = self.server_status.shown_state()
+                    self.server_status.check()
+                    after = self.server_status.shown_state()
+                    if after != before and not first:      # the first check isn't a change
+                        self._log(f"[INFO] Tranquility: {after}. {self.server_status.reason()}".rstrip())
+                except Exception as e:
+                    self._log(f"[WARNING] Couldn't check Tranquility's status: {e}")
+                finally:
+                    self._status_checking = False
+                    self._refresh_status_icon_soon()
+
+            threading.Thread(target=work, daemon=True).start()
+        self._refresh_status_icon()
+        self.root.after(30_000, self._poll_server_status)
+
+    def _show_status_notice(self):
+        """Once, and again after a Full Reset: the app now checks Tranquility's status (D11.10, D11.18)."""
+        if self.pull_state_service.status_notice_seen:
+            return
+        messagebox.showinfo("Tranquility Status", STATUS_NOTICE)
+        self.pull_state_service.status_notice_seen = True
+        self.pull_state_service.save()
+
+    def match_losses(self, seen_now=None):
+        """
+        Losses (plan 30.2): new killmails matched to the ships gone since the last pull. Each ship that
+        could be it is asked about (Q30.1). A lost Titan or Supercarrier gets condolences and the offer
+        to remove its requirement (D8.10).
+        """
+        from app.asset_handling.corp_pull import load_corporations
+        from app.asset_handling.killmail_pull import load_killmails
+        from app.loaders.role_manager import fitting_in_use
+        from app.loaders.ship_designations import pulled_item_ids
+        from app.services.losses import is_super
+        if not esi_features.enabled("losses"):
+            return []
+        designations = self.ship_designations.designations
+        requirements = [(role, req) for role in self.role_manager.list_roles() for req in role.get("requirements", [])]
+
+        def tied(d):
+            """D7.7: a requirement uses the ship's fitting, in the ship's system (its Home) or anywhere."""
+            home = (d.get("home") or {}).get("system_id")
+            return any(fitting_in_use(req) == d.get("fit_uid") and
+                       (home is None or req.get("system_id") in (None, home)) for _, req in requirements)
+        corporations = [c["corporation_id"] for c in load_corporations()] \
+            if esi_features.enabled("losses_corporation") else []
+        if seen_now is None:
+            seen_now = pulled_item_ids(GENERATED_DIR, CORP_DIR)       # what the latest pull saw
+        new = self.loss_book.match_new(load_killmails(), designations, seen_now,
+                                       [int(c) for c in self.auth_service.profiles], corporations, tied)
+        names = self.auth_service.index
+        corp_names = {str(c["corporation_id"]): c.get("name") for c in load_corporations()}
+        for record in new:
+            hull = self.evedb_loader.get_type_name(record["ship_type_id"])
+            a_hull = ("an " if hull[:1].upper() in "AEIOU" else "a ") + hull
+            who = names.get(str(record["pilot"]), f"Character {record['pilot']}")
+            if record["candidates"]:
+                self._ask_which_lost(record, hull, a_hull, who, names, corp_names)
+            if record["lost"] is not None:
+                d = designations.get(record["lost"], {})
+                named = f'{hull} "{d["custom_name"]}"' if d.get("custom_name") else hull
+                self._log(f"[WARNING] Lost: {self._owner_name(d, names, corp_names)}'s {named} on {record['time'][:10]}.")
+            elif record["candidates"]:
+                self._log(f"[WARNING] {who} lost {a_hull} on {record['time'][:10]}: {len(record['candidates'])} "
+                          "ship(s) could be it (right-click ▸ This One Was Lost, or It Wasn't This One).")
+            if is_super(self.evedb_loader.get_type_group(record["ship_type_id"])):
+                self._condolences(record, hull, a_hull, who)
+        return new
+
+    @staticmethod
+    def _owner_name(designation, names, corp_names) -> str:
+        owner = designation.get("owner") or designation.get("holder") or {}
+        if owner.get("kind") == "character":
+            return names.get(str(owner.get("id")), f"Character {owner.get('id')}")
+        return corp_names.get(str(owner.get("id"))) or "the corporation"
+
+    def _ask_which_lost(self, record, hull, a_hull, who, names, corp_names):
+        """
+        Q30.1: the app never decides which ship a killmail was. For each ship that could be it: Yes, it
+        was; No, it wasn't (the next one's asked); Cancel, decide later (it stays Possibly lost).
+        """
+        when = record["time"][:10]
+        where = self.evedb_loader.get_system_name(record["system_id"]) if record.get("system_id") else ""
+        for item_id in list(record["candidates"]):
+            d = self.ship_designations.designations.get(item_id, {})
+            whose = self._owner_name(d, names, corp_names)
+            named = f'{hull} "{d["custom_name"]}"' if d.get("custom_name") else hull
+            fitting = self.fitting_manager.get_fitting(d.get("fit_uid")) if d.get("fit_uid") is not None else None
+            home = (d.get("home") or {}).get("system_id")
+            about = ", ".join(x for x in ((fitting or {}).get("fit_name"),
+                                          f"home {self.evedb_loader.get_system_name(home)}" if home else "") if x)
+            answer = messagebox.askyesnocancel(
+                "Ship Lost?",
+                f"{who} lost {a_hull} on {when}" + (f" in {where}" if where else "") + ".\n\n"
+                f"Was it {whose}'s {named}" + (f" ({about})" if about else "") + "? It's gone since an "
+                "earlier pull.\n\nYes: it was.\nNo: it wasn't.\nCancel: decide later (right-click it ▸ This "
+                "One Was Lost).")
+            if answer is None:
+                return
+            if answer:
+                self.loss_book.settle(record["killmail_id"], item_id)
+                return
+            self.loss_book.rule_out(record["killmail_id"], item_id)
+
+    def _condolences(self, record, hull, a_hull, who):
+        """D8.10: thoughts and prayers, and the offer to remove the requirement while they save up."""
+        from app.loaders.role_manager import fitting_in_use
+        lost = self.ship_designations.designations.get(record.get("lost") or -1, {})
+        found = [(role, req) for role in self.role_manager.list_roles() for req in role.get("requirements", [])
+                 if lost and fitting_in_use(req) == lost.get("fit_uid")]
+        text = (f"{who} lost {a_hull} on {record['time'][:10]}. Our thoughts and prayers are with them, and "
+                "with their wallet.")
+        if not found:
+            messagebox.showinfo("Condolences", text)
+            return
+        role, req = found[0]
+        if messagebox.askyesno("Condolences", text + f"\n\nRemove the {hull} requirement from {role['role_name']} "
+                                                     "while they save up for the next one?"):
+            self.role_manager.remove_requirement(role["role_uid"], req["req_uid"])
+            self._log(f"[INFO] Removed the {hull} requirement from {role['role_name']}.")
+
+    def _after_successful_pull(self, result=None):
+        try:
+            self.match_losses()
+        except Exception as e:
+            self._log(f"[WARNING] Losses weren't matched: {e}")
+        dropped = result.dropped if result is not None else {}
+        if dropped:
+            names = self.auth_service.index
+            lines = "\n".join(f"• {names.get(c, c)}: {why}" for c, why in dropped.items())
+            messagebox.showwarning("Pull Finished", f"The asset pull finished, but these characters were skipped:\n\n"
+                                   f"{lines}\n\nTheir assets are from the last pull that reached them.")
+        else:
+            messagebox.showinfo("Success", "Asset pull and aggregation completed successfully.")
         self._name_unknown_structures(include_skipped=False)
 
     # --- structures no character could look up (dead code clean-up C2) -------------------

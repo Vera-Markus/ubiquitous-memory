@@ -24,7 +24,11 @@ from app.gui.type_ahead import TypeAhead
 from app.loaders.ship_designations import ANYWHERE, home_system, is_anywhere
 from app.gui.toggle_switch import ToggleSwitch
 from app.models.audit_models import RequirementStatus
+from app.asset_handling.skill_pull import load_levels
+from app.services import esi_features
 from app.services.fleet_ships import bay_of, hangar_of, holders, ship_rows
+from app.services.shopping_list_service import ShoppingListService, items_text
+from app.models.audit_models import ItemShortfall
 from app.services.tracking import TrackingContext
 
 logger = logging.getLogger(__name__)
@@ -38,6 +42,7 @@ SHIPS_SHARE = 0.75          # the ship list's share of the tab's width, at first
 SHIP_COLUMNS = ("fitting", "home", "status", "owner")
 PERSONAL = "<Personal>"     # first in the Fitting list: the audit never sees the ship (S5)
 ANYWHERE_LABEL = "Anywhere"
+COPY_MISSING = "Copy Missing Items"
 STATUS_TEXT = {RequirementStatus.PASS: "Ready", RequirementStatus.WARN: "Ready, needs attention",
                RequirementStatus.FAIL: "Not ready"}
 
@@ -83,6 +88,8 @@ def status_text(row) -> str:
         return "Personal"
     if row.fit_uid is None:
         return "No fitting"
+    if row.loss:
+        return ("Lost " if row.loss["state"] == "lost" else "Possibly lost ") + row.loss["date"]
     if row.result is None:
         return row.note or "Not audited"
     return STATUS_TEXT[row.result.status]
@@ -111,11 +118,20 @@ class CorpTab:
         ttk.Label(top, text="Ships of:").pack(side=tk.LEFT, padx=5)
         self.holder_combo = ttk.Combobox(top, state="readonly", width=40)
         self.holder_combo.pack(side=tk.LEFT, padx=5)
-        self.holder_combo.bind("<<ComboboxSelected>>", lambda e: self._load_ships())
+        self.holder_combo.bind("<<ComboboxSelected>>", lambda e: self._load_view())
         ttk.Label(top, text="A corporation is listed when a linked Director can read its hangars.",
                   style=ui_style.HINT_LABEL).pack(side=tk.LEFT, padx=15)
 
+        # Ships, or the holder's clones and implants: two tabs, as By Doctrine and By System are.
+        self.view_tabs = ttk.Notebook(self.frame)
+        for text in ("Ships", "Implants"):
+            self.view_tabs.add(ttk.Frame(self.view_tabs, height=1), text=text)
+        self.view_tabs.pack(fill=tk.X, padx=10)
+        self.view_tabs.bind("<<NotebookTabChanged>>", lambda e: self._on_view_changed())
+        self._setup_implants()
+
         paned = tk.PanedWindow(self.frame, orient=tk.HORIZONTAL)
+        self._paned = paned
         paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         # Ships 75%, the fitting and audit 25%, the first time the tab is shown; the divider can be dragged.
         self._split_placed = False
@@ -149,6 +165,10 @@ class CorpTab:
         self.ship_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.ship_tree.bind("<<TreeviewSelect>>", lambda e: self._on_selection())
+        # Right-click a ship: can its pilot fly it as it's fitted? (ESI features plan 26.6), and its loss.
+        # Built on each right-click with only what applies: no disabled entries (hard to read on Windows).
+        self.ship_menu = tk.Menu(self.ship_tree, tearoff=0)
+        self.ship_tree.bind("<Button-3>", self._on_ship_right_click)
         self.ship_tree.status_icons = StatusIcons(self.ship_tree)
         self.lbl_ships_empty = ttk.Label(self.ship_tree, text="", style=ui_style.ON_LIST_LABEL)
 
@@ -193,6 +213,10 @@ class CorpTab:
         self.audit_tree = ttk.Treeview(audit, show="tree")
         self.audit_tree.pack(fill=tk.BOTH, expand=True)
         self.audit_tree.status_icons = StatusIcons(self.audit_tree)
+        # Right-click the audit: copy what the ship lacks, or show a missing item in the game's market.
+        self._audit_data = {}           # audit tree item -> the ItemShortfall behind a missing item line
+        self.audit_menu = tk.Menu(self.audit_tree, tearoff=0)
+        self.audit_tree.bind("<Button-3>", self._on_audit_right_click)
         eft_frame = ttk.Frame(self.ship_view, padding=(5, 5))
         self.ship_view.add(eft_frame, text="EFT")
         self.eft_switch = ToggleSwitch(
@@ -216,6 +240,91 @@ class CorpTab:
 
         # Read the data again whenever the tab is opened (Pull All, new characters, library changes).
         self.app.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed, add="+")
+
+    # --- Implants (the Ships tab's second view) -------------------------------------------------------
+
+    def _setup_implants(self):
+        """The chosen character's clones: the active one and each jump clone, their implants by slot,
+        and which of the library's implant sets each carries."""
+        self.implants_frame = ttk.Frame(self.frame)     # packed when the Implants tab is chosen
+        self.lbl_clones = ttk.Label(self.implants_frame, text="", style=ui_style.HINT_LABEL)
+        self.lbl_clones.pack(anchor=tk.W, pady=(0, 4))
+        tree_frame = ttk.Frame(self.implants_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+        self.implant_tree = ttk.Treeview(tree_frame, columns=("implants", "sets"), selectmode="browse")
+        self.implant_tree.heading("#0", text="Clone", anchor=tk.W)
+        self.implant_tree.heading("implants", text="Implants", anchor=tk.W)
+        self.implant_tree.heading("sets", text="Implant sets it carries", anchor=tk.W)
+        self.implant_tree.column("#0", width=380, stretch=True)
+        self.implant_tree.column("implants", width=90, stretch=False)
+        self.implant_tree.column("sets", width=320, stretch=True)
+        scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.implant_tree.yview)
+        self.implant_tree.configure(yscrollcommand=scroll.set)
+        self.implant_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def view(self) -> str:
+        return "implants" if self.view_tabs.index(self.view_tabs.select()) == 1 else "ships"
+
+    def _on_view_changed(self):
+        if self.view() == "implants":
+            self._paned.pack_forget()
+            self.implants_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        else:
+            self.implants_frame.pack_forget()
+            self._paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self._load_view()
+
+    def _load_view(self):
+        if self.view() == "implants":
+            self._load_implants()
+        else:
+            self._load_ships()
+
+    def _load_implants(self):
+        from app.services.implant_audit import clones_of
+        from app.services.implant_rules import check_set, is_implant_set, listed_implants, set_name
+        from app.models.audit_models import RequirementStatus as Status
+        import json
+        tree = self.implant_tree
+        tree.delete(*tree.get_children())
+        holder = self._holders.get(self.holder_combo.get())
+        if holder is None or holder.get("kind") != "character":
+            self.lbl_clones.config(text="Clones belong to characters: choose a character above.")
+            return
+        try:
+            record = json.loads((paths.CLONES_DIR / f"{int(holder['id'])}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            record = None
+        if not record:
+            self.lbl_clones.config(text="No clone data yet: Pull All (with a login that includes clones).")
+            return
+        rules = self.app.audit_engine.rules
+        name = self.app.evedb_loader.get_type_name
+        sets = [f for f in self.app.fitting_manager.list_fittings() if is_implant_set(f)]
+        listed = [(set_name(f), listed_implants(f, rules.implant_slot, name)) for f in sets]
+        home = (record.get("home_location") or {}).get("location_id")
+        jumped = (record.get("last_clone_jump_date") or "")[:10]
+        self.lbl_clones.config(text=f"Home station: {self.app.evedb_loader.location_label(home) if home else '—'}"
+                                    + (f" · last clone jump {jumped}" if jumped else ""))
+        for clone in clones_of(record):
+            carries = [n for n, slots in listed
+                       if slots and check_set(slots, clone.implants, rules.implant_slot, name)[0] != Status.FAIL]
+            where = "Active clone" if clone.active else \
+                f"Jump clone · {self.app.evedb_loader.location_label(clone.location_id)}"
+            row = tree.insert("", tk.END, text=where, open=True,
+                              values=(f"{len(clone.implants)}", ", ".join(carries) if carries else "—"))
+            slotted = sorted(((rules.implant_slot(t) or 99), name(t)) for t in clone.implants)
+            for slot, implant in slotted:
+                tree.insert(row, tk.END, text=(f"Slot {slot}: " if slot != 99 else "") + implant, values=("", ""))
+
+    def describe_implants(self) -> dict:
+        """What the Implants view shows, for the Ships harness."""
+        def dump(parent=""):
+            return [{"text": self.implant_tree.item(i, "text"),
+                     "values": [str(v) for v in self.implant_tree.item(i, "values")],
+                     "children": dump(i)} for i in self.implant_tree.get_children(parent)]
+        return {"note": self.lbl_clones.cget("text"), "clones": dump()}
 
     def _place_split(self, paned, width):
         if self._split_placed or width < 100:       # not laid out yet
@@ -258,7 +367,7 @@ class CorpTab:
         current = self.holder_combo.get()
         self.holder_combo["values"] = labels
         self.holder_combo.set(current if current in labels else (labels[0] if labels else ""))
-        self._load_ships()
+        self._load_view()
 
     def _load_ships(self, keep=()):
         """Fills the ship tree for the chosen holder; keep: item IDs to select again."""
@@ -270,6 +379,7 @@ class CorpTab:
             names = {(h["kind"], h["id"]): h["name"] for h in self._holders.values()}
             rows = ship_rows(self._context, holder, self.app.ship_designations, self.app.fitting_manager,
                              self.app.audit_engine, names)
+        rows += self._lost_rows(holder)
         total = len(rows)
         if self.assigned_only.get():
             rows = [r for r in rows if r.fit_uid is not None]
@@ -287,6 +397,7 @@ class CorpTab:
 
         def add(row, parent, nested):
             item = self.ship_tree.status_icons.insert(parent, tk.END, text=ship_label(row, nested), open=True,
+                                                      tags=("lost",) if row.loss else (),
                                                       values=(PERSONAL if row.personal else row.fit_name or "—",
                                                               home_text(row, self._system_name), status_text(row),
                                                               owner_text(row)))
@@ -335,6 +446,7 @@ class CorpTab:
         rows = self._selected_rows()
         hulls = {r.type_id for r in rows}
         self.audit_tree.delete(*self.audit_tree.get_children())
+        self._audit_data = {}
         self._fit_choices = {}
         if not rows:
             self.lbl_selection.config(text="Select ships on the left.")
@@ -382,6 +494,190 @@ class CorpTab:
             self._show_audit(rows[0])
         self._show_eft(rows[0] if len(rows) == 1 else None)
 
+    # --- Can <pilot> Fly This? (ESI features plan 26.6) -----------------------------------------------
+
+    def _pilot_of(self, row):
+        """(character ID, name) who'd fly the ship: its owner, else the character holding it; None for a corporation."""
+        owner = row.owner
+        if owner is None:
+            holder = self._holders.get(self.holder_combo.get())
+            owner = {"kind": holder["kind"], "id": holder["id"]} if holder else None
+        if not owner or owner.get("kind") != "character":
+            return None
+        cid = str(owner["id"])
+        return cid, self.app.auth_service.index.get(cid, f"Character {cid}")
+
+    def _lost_rows(self, holder):
+        """Losses (plan 30.3): the holder's ships a killmail matched, greyed, "Lost <date>", under Lost."""
+        from app.services.fleet_ships import ShipRow
+        if holder is None or not esi_features.enabled("losses"):
+            return []
+        here = {"kind": holder["kind"], "id": int(holder["id"])}
+        rows = []
+        for item_id, d in self.app.ship_designations.designations.items():
+            owner = d.get("owner") or d.get("holder") or {}
+            if {"kind": owner.get("kind"), "id": int(owner.get("id") or 0)} != here:
+                continue
+            loss = self.app.loss_book.info(item_id)
+            if loss is None:
+                continue
+            fitting = self.app.fitting_manager.get_fitting(d.get("fit_uid")) or {}
+            rows.append(ShipRow(item_id=int(item_id), type_id=int(d.get("type_id") or 0),
+                                hull=self.app.evedb_loader.get_type_name(int(d.get("type_id") or 0)),
+                                custom_name=d.get("custom_name") or "", location_id=None, location="Lost ships",
+                                aboard="lost", fit_uid=d.get("fit_uid"), fit_name=fitting.get("fit_name", ""),
+                                owner=here, owner_name=holder.get("name", ""), home=d.get("home"), loss=loss,
+                                system_id=(d.get("home") or {}).get("system_id"),
+                                note=("Lost " if loss["state"] == "lost" else "Possibly lost ") + loss["date"]))
+        self.ship_tree.tag_configure("lost", foreground=ui_style.MUTED)
+        return rows
+
+    def _handle_this_one_lost(self, row):
+        self.app.loss_book.settle(row.loss["killmail_id"], row.item_id)
+        self._log(f"[INFO] {row.custom_name or row.hull} marked as the ship lost on {row.loss['date']}.")
+        self._load_ships()
+
+    def _handle_not_this_one(self, row):
+        self.app.loss_book.rule_out(row.loss["killmail_id"], row.item_id)
+        self._log(f"[INFO] {row.custom_name or row.hull} wasn't the ship lost on {row.loss['date']}.")
+        self._load_ships()
+
+    def _on_ship_right_click(self, event):
+        item = self.ship_tree.identify_row(event.y)
+        if item not in self._rows:
+            return
+        if item not in self.ship_tree.selection():
+            self.ship_tree.selection_set(item)
+        self._menu_row = self._rows[item]
+        if self.fill_ship_menu(self._menu_row):
+            self.ship_menu.post(event.x_root, event.y_root)
+
+    def fill_ship_menu(self, row) -> list:
+        """The ship's right-click entries: Can <pilot> Fly This? (a pilot's ship, with the skill check on),
+        then its loss's. Returns the labels; an empty menu isn't shown."""
+        menu = self.ship_menu
+        if menu.index(tk.END) is not None:
+            menu.delete(0, tk.END)
+        pilot = self._pilot_of(row)
+        if esi_features.enabled("skills") and pilot is not None:
+            menu.add_command(label=f"Can {pilot[1]} Fly This?", command=self._handle_can_fly)
+        if row.loss:
+            if menu.index(tk.END) is not None:
+                menu.add_separator()
+            if row.loss["state"] == "possibly":
+                self.ship_menu.add_command(label="This One Was Lost", command=lambda: self._handle_this_one_lost(row))
+            self.ship_menu.add_command(label="It Wasn't This One", command=lambda: self._handle_not_this_one(row))
+            if esi_features.enabled("losses_srp"):
+                self.ship_menu.add_command(label="Copy SRP Items",
+                                           command=lambda: self.app.audit_view._handle_copy_srp(row.loss["killmail_id"]))
+        end = menu.index(tk.END)
+        if end is not None and menu.type(end) == "separator":
+            menu.delete(end)
+        end = menu.index(tk.END)
+        return [] if end is None else [menu.entrycget(i, "label") for i in range(end + 1)
+                                       if menu.type(i) != "separator"]
+
+    def _ship_asset(self, row):
+        """The ship as it is (its fitted modules and bays), from its holder's assets."""
+        holder = self._holders.get(self.holder_combo.get())
+        if holder is None or self._context is None:
+            return None
+        for sighting in self._context.universe.ships_held_by({"kind": holder["kind"], "id": int(holder["id"])}):
+            if sighting.item_id == row.item_id:
+                return self._context.ships_of(sighting)[0]
+        return None
+
+    def can_fly_text(self, row):
+        """(title, message, check) for Can <pilot> Fly This?; check is None when there's nothing to copy."""
+        pilot = self._pilot_of(row)
+        title = f"Can {pilot[1]} Fly This?" if pilot else "Can … Fly This?"
+        if pilot is None:
+            return title, "This ship belongs to a corporation: give it a character as its owner first.", None
+        levels = load_levels(pilot[0])
+        if levels is None:
+            return title, (f"{pilot[1]}'s skills haven't been pulled yet: pull with a login that includes skills "
+                           "(Characters ▸ Add Character again if it's older)."), None
+        ship = self._ship_asset(row)
+        if ship is None:
+            return title, "This ship wasn't found in the last pull.", None
+        check = self.app.audit_engine.skill_requirements().check_ship(ship, levels)
+        name = ship_label(row)[2:]
+        if check.ok:
+            return title, f"Yes: {pilot[1]} can fly {name} as it's fitted, with everything aboard.", None
+        lines = []
+        if check.hard:
+            lines += [f"No: {pilot[1]} can't fly {name} as it's fitted. Missing for the hull and fitted modules:"]
+            lines += [f"  • {m.text}" for m in check.hard]
+        else:
+            lines += [f"Yes, as it's fitted: {pilot[1]} can fly {name}."]
+        if check.soft:
+            lines += ["", "Missing for drones, fighters, charges or cargo:"] + [f"  • {m.text}" for m in check.soft]
+        return title, "\n".join(lines), check
+
+    def _handle_can_fly(self):
+        row = getattr(self, "_menu_row", None)
+        if row is None:
+            return
+        title, message, check = self.can_fly_text(row)
+        if check is None:
+            messagebox.showinfo(title, message)
+            return
+        if messagebox.askyesno(title, message + "\n\nCopy a skill plan for the missing skills?"):
+            lines = self.app.audit_engine.skill_requirements().plan(check)
+            self.frame.clipboard_clear()
+            self.frame.clipboard_append("\n".join(lines))
+            self._log(f"[INFO] Skill plan copied: {len(lines)} level(s). Paste it into the game's skill planner.")
+
+    # --- the selected ship's audit: Copy Missing Items, Show in Market ---------------------------------
+
+    def _audit_row(self):
+        rows = self._selected_rows()
+        return rows[0] if len(rows) == 1 and rows[0].result is not None else None
+
+    def missing_items(self, row):
+        """What the ship lacks, as Multibuy lines (as Add Missing Items puts it on the shopping list)."""
+        service = ShoppingListService(self.app.audit_engine.rules, self.app.evedb_loader.get_type_name)
+        return service.items_for_ship(row.result)
+
+    def _on_audit_right_click(self, event):
+        row = self._audit_row()
+        if row is None:
+            return
+        item = self.audit_tree.identify_row(event.y)
+        if item:
+            self.audit_tree.selection_set(item)
+        if self._fill_audit_menu(row, item):
+            self.audit_menu.post(event.x_root, event.y_root)
+
+    def _fill_audit_menu(self, row, item):
+        menu = self.audit_menu
+        if menu.index(tk.END) is not None:
+            menu.delete(0, tk.END)
+        if self.missing_items(row):
+            menu.add_command(label=COPY_MISSING, command=self._handle_copy_missing)
+        shortfall = self._audit_data.get(item)
+        if esi_features.enabled("client") and shortfall:
+            menu.add_command(label=f"Show {shortfall.name} in Market…",
+                             command=lambda: self._handle_show_market(row, shortfall))
+        end = menu.index(tk.END)
+        return [] if end is None else [menu.entrycget(i, "label") for i in range(end + 1)]
+
+    def _handle_copy_missing(self):
+        row = self._audit_row()
+        if row is None:
+            return
+        items = self.missing_items(row)
+        self.frame.clipboard_clear()
+        self.frame.clipboard_append(items_text(items))
+        self._log(f"[INFO] Missing items for {ship_label(row)[2:]} copied: {len(items)} item type(s), "
+                  "ready for the game's Multibuy.")
+
+    def _handle_show_market(self, row, shortfall: ItemShortfall):
+        pilot = self._pilot_of(row)
+        self.app.open_in_game("Show in Market", shortfall.name,
+                              lambda client, char_id: client.show_market(char_id, shortfall.type_id),
+                              pilot[0] if pilot else None)
+
     def _show_audit(self, row):
         if row.result is None:
             text = "No fitting assigned." if row.fit_uid is None else (row.note or "Not audited.")
@@ -420,6 +716,8 @@ class CorpTab:
 
     def _insert(self, node: Node, parent: str):
         item = self.audit_tree.status_icons.insert(parent, tk.END, text=node.text, tone=node.tone, open=node.open)
+        if isinstance(node.data, ItemShortfall):
+            self._audit_data[item] = node.data
         for child in node.children:
             self._insert(child, item)
 

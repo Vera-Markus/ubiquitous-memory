@@ -129,7 +129,7 @@ def bay_node(bay: BayResult) -> Node:
     """One bay row under a ship (design §10.1). Bays without requirements have no row."""
     icon = ICONS[bay.status]
     if bay.bay_key == ESCAPE_BAY_KEY:
-        children = [Node(f"{s.name} (Missing {s.missing})") for s in bay.shortfalls]
+        children = [Node(f"{s.name} (Missing {s.missing})", data=s) for s in bay.shortfalls]
         children += [Node(f"Unexpected: {text}") for text in counted(bay.unexpected)]
         return Node(f"{icon} {bay_label(bay.bay_key)}: {bay.message}", children)
     children = [Node(count_text(c.name, c.actual, c.required)) for c in bay.counts]
@@ -153,8 +153,16 @@ def placement_text(ship: ShipRequirementResult) -> str:
     if ship.placement == "DEPLOYED":
         return " · ↗ Deployed: " + ", ".join(p for p in (holder, ship.where) if p) + f", {ship.placement_note}"
     if ship.placement == "MISSING":
-        return f" · ❓ Missing since {(ship.missing_since or '')[:10]}"
+        return loss_text(ship.loss) if ship.loss else f" · ❓ Missing since {(ship.missing_since or '')[:10]}"
     return ""
+
+
+def loss_text(loss: dict) -> str:
+    """A missing ship a killmail matched (ESI features plan 30.3)."""
+    insured = f" · insurance pays ≈ {loss['insurance']}" if loss.get("insurance") else ""
+    if loss.get("state") == "lost":
+        return f" · 💥 Lost {loss['date']}: replace{insured}"
+    return f" · ❓ Possibly lost {loss['date']} (right-click ▸ This One Was Lost){insured}"
 
 
 def ship_node(ship: ShipRequirementResult, packed: Dict[int, CarriedShip], where: str = "", notes: str = "",
@@ -169,7 +177,7 @@ def ship_node(ship: ShipRequirementResult, packed: Dict[int, CarriedShip], where
             seen += f", held by {last['holder']['name']}"
         children.append(Node(f"❓ {seen}"))
         children.append(Node("❌ Replacement (add by hand)",
-                             [Node(f"{s.name} (Missing {s.missing})") for s in ship.shortfalls],
+                             [Node(f"{s.name} (Missing {s.missing})", data=s) for s in ship.shortfalls],
                              values=(MISSING_ITEMS,), tone=priority))
         label = f"{ICONS[ship.status]} {ship.custom_name or ship.ship_name}" + (f" - {fit_name}" if fit_name else "")
         return Node(label + placement_text(ship), children, data=ship, tone=tone)
@@ -184,7 +192,7 @@ def ship_node(ship: ShipRequirementResult, packed: Dict[int, CarriedShip], where
     moves = [m for m in moves if m not in removals]
     if shortfalls:
         children.append(Node(f"{ICONS[RequirementStatus.FAIL]} Missing Items",
-                             [Node(f"{s.name} (Missing {s.missing})") for s in shortfalls],
+                             [Node(f"{s.name} (Missing {s.missing})", data=s) for s in shortfalls],
                              values=(MISSING_ITEMS,), tone=priority))
     if moves:
         nothing_to_buy = not ship.shortfalls and not any(b.status == RequirementStatus.FAIL for b in ship.bay_results)
@@ -227,14 +235,16 @@ def requirement_node(requirement: dict, hull: str, result: Optional[RequirementR
         node = implant_set_node(text, result)
         node.tone = result.failure
         return node
+    skills = skill_nodes(result)
     if not result.ship_results:
         reason = result.message or "No ship found"
         # The requirement row carries its result, so the shopping list can offer the missing hull
         # (and, when NOT CHECKED, the hulls to assign: right-click).
         not_checked = result.status == RequirementStatus.NOT_CHECKED
         icon = ICONS[RequirementStatus.NOT_CHECKED if not_checked else RequirementStatus.FAIL]
-        return Node(f"{ICONS[result.status]} {text}", [Node(f"{icon} {reason}", tone=None if not_checked else result.priority)],
-                    data=result, tone=result.failure)
+        return Node(f"{ICONS[shown_status(result)]} {text}",
+                    skills + [Node(f"{icon} {reason}", tone=None if not_checked else result.priority)],
+                    data=result, tone=shown_tone(result))
     # Under "Any" location each ship shows where it is (D16).
     any_location = not where
     ships = [ship_node(s, packed, f" · {ship_location(s)}" if any_location else "", notes, fit_name, result.priority)
@@ -244,8 +254,52 @@ def requirement_node(requirement: dict, hull: str, result: Optional[RequirementR
     if result.unassigned_hulls:
         # A missing ship, and hulls with no fitting that may be its replacement (23.4): right-click to assign.
         ships.insert(0, Node(f"{ICONS[RequirementStatus.NOT_CHECKED]} {result.message}"))
-    return Node(f"{ICONS[result.status]} {text} · {result.ships_ready} of {result.ships_listed} ready", ships,
-                tone=result.failure, data=result if result.unassigned_hulls else None)
+    return Node(f"{ICONS[shown_status(result)]} {text} · {result.ships_ready} of {result.ships_listed} ready",
+                skills + ships, tone=shown_tone(result), data=result if result.unassigned_hulls else None)
+
+
+# --- the skill check (ESI features plan 26.5) -------------------------------------------------------
+
+def shown_status(result: RequirementResult) -> RequirementStatus:
+    """The requirement row's icon: its ships' status, made worse by skills the pilot is missing."""
+    failure = result.skill_failure
+    if failure == "hard":
+        return RequirementStatus.FAIL
+    if failure == "soft" and result.status == RequirementStatus.PASS:
+        return RequirementStatus.WARN
+    return result.status
+
+
+def shown_tone(result: RequirementResult) -> Optional[str]:
+    tones = (result.failure, result.skill_failure)
+    return "hard" if "hard" in tones else ("soft" if "soft" in tones else None)
+
+
+def skill_nodes(result: RequirementResult) -> List[Node]:
+    """
+    One line when the pilot is missing skills: "❌ Can't fly: Carriers V (has IV)" for the hull or
+    fitted modules (D1.1), "⚠ Skills to train: …" for the rest. Its data is the check, for Copy Skill Plan.
+    """
+    check = result.skills
+    if result.skill_state != "checked" or check is None or check.ok:
+        return []
+    failure = result.skill_failure
+    icon = ICONS[RequirementStatus.FAIL if failure == "hard" else RequirementStatus.WARN]
+    if check.hard and check.soft:
+        text = f"Can't fly: {check.summary(parts=('hard',))}; to train: {check.summary(2, ('soft',))}"
+    elif check.hard:
+        text = f"Can't fly: {check.summary()}"
+    else:
+        text = f"Skills to train: {check.summary()}"
+    return [Node(f"{icon} {text}", data=check, tone=failure)]
+
+
+def skills_note(results: Iterable[RequirementResult]) -> Optional[Node]:
+    """A character whose skills haven't been pulled: one line, not one per requirement."""
+    if any(r is not None and r.skill_state == "unchecked" for r in results):
+        return Node(f"{ICONS[RequirementStatus.NOT_CHECKED]} Skills not checked: pull with a login that includes "
+                    "skills (Characters ▸ Add Character again if it's older)")
+    return None
 
 
 def implant_set_node(text: str, result: RequirementResult) -> Node:
@@ -279,9 +333,9 @@ def character_status(result: Optional[AuditResult], packed: Sequence[PackedShipW
     if result is None:
         return None
     if not result.overall_pass:
-        failed = any(r.failure == "hard" for r in result.requirement_results)
+        failed = any(r.failure == "hard" or r.skill_failure == "hard" for r in result.requirement_results)
         return RequirementStatus.FAIL if failed else RequirementStatus.NOT_CHECKED
-    attention = any(r.status == RequirementStatus.WARN or r.failure == "soft"
+    attention = any(r.status == RequirementStatus.WARN or r.failure == "soft" or r.skill_failure == "soft"
                     or (not r.counts_for_readiness and r.status != RequirementStatus.PASS)
                     for r in result.requirement_results)
     if packed or attention:

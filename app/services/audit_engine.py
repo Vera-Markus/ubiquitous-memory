@@ -22,6 +22,8 @@ the place is audited, as before assignments existed.
 import logging
 from typing import Any, Dict, List, Optional
 
+from app.services import esi_features
+from app.services.skill_requirements import SkillRequirements
 from app.loaders.role_manager import fitting_in_use, requirement_priority
 from app.loaders.ship_designations import home_system
 from app.loaders.sde_rules import SdeRules
@@ -49,6 +51,7 @@ class AuditEngine:
     """
 
     def __init__(self, doctrine_manager, role_manager, fitting_manager, evedb_loader, sde_rules: Optional[SdeRules] = None):
+        self._skill_requirements: Optional[SkillRequirements] = None      # loaded on first use (plan 26.5)
         self.doctrine_manager = doctrine_manager
         self.role_manager = role_manager
         self.fitting_manager = fitting_manager
@@ -262,6 +265,7 @@ class AuditEngine:
             result.priority = effective_priority(role_data, req)
             if requirement_priority(req) == "hard":
                 result.covered_by = covering(role_data, req)
+            self._check_skills(snapshot, req, result)
             requirements.append(result)
         return AuditResult(
             character_id=snapshot.character_id,
@@ -271,6 +275,26 @@ class AuditEngine:
             doctrine_name=doctrine_info.get("name"),
             requirement_results=requirements,
         )
+
+    # --- the skill check (ESI features plan 26.5) --------------------------------------------
+
+    def skill_requirements(self) -> SkillRequirements:
+        if self._skill_requirements is None:
+            self._skill_requirements = SkillRequirements(self.evedb_loader.db_path)
+        return self._skill_requirements
+
+    def _check_skills(self, snapshot: AuditSnapshot, req: Dict[str, Any], result: RequirementResult) -> None:
+        """Can the pilot fly the requirement's fitting? Not for implant sets (their clones are the check)."""
+        if not esi_features.enabled("skills") or result.implant_set is not None:
+            return
+        fitting = self.fitting_manager.get_fitting(fitting_in_use(req))
+        if fitting is None:
+            return
+        if snapshot.skills is None:
+            result.skill_state = "unchecked"
+            return
+        result.skill_state = "checked"
+        result.skills = self.skill_requirements().check_fitting(fitting, snapshot.skills)
 
     # --- one requirement -----------------------------------------------------------------
 

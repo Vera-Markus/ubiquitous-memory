@@ -69,6 +69,8 @@ class ResetService:
         self.config_dir = Path(config_dir or data / "config")
         self.clones_dir = Path(clones_dir or self.raw_dir.parent / "clones")
         self.corp_dir = Path(corp_dir or self.raw_dir.parent / "corp")
+        self.skills_dir = self.raw_dir.parent / "skills"            # skills per character (plan 26.3)
+        self.contracts_dir = self.raw_dir.parent / "contracts"      # contracts and their items (plan 28.2)
 
     # --- Clear Asset Data ------------------------------------------------------------------
 
@@ -78,6 +80,13 @@ class ResetService:
             files += sorted(self.clones_dir.glob("*.json"))      # clones and implants: pulled data too
         if self.corp_dir.exists():
             files += sorted(self.corp_dir.glob("*.json"))        # corporation hangars: pulled data too
+        if self.skills_dir.exists():
+            files += sorted(self.skills_dir.glob("*.json"))      # skills: pulled data too
+        if self.contracts_dir.exists():
+            files += sorted(self.contracts_dir.glob("*.json"))   # contracts: pulled data too
+        killmails = self.raw_dir.parent / "killmails"
+        if killmails.exists():
+            files += sorted(killmails.glob("*.json"))            # killmails (plan 30.1): pulled data too
         if (self.generated_dir / "all_assets.json").exists():
             files.append(self.generated_dir / "all_assets.json")
         return files
@@ -180,10 +189,16 @@ class ResetService:
                 self.raw_dir,
                 self.clones_dir,
                 self.corp_dir,
+                self.skills_dir,
+                self.contracts_dir,
+                self.raw_dir.parent / "fitting_backups",
+                self.raw_dir.parent / "killmails",
+                self.config_dir / "losses.json",
                 self.generated_dir,
                 self.config_dir / "pull_state.json",
                 self.config_dir / "esi_cache.json",
                 self.config_dir / "export_profiles.json",
+                self.config_dir / "contract_choices.json",
             ]
 
             # 2. Perform deletion

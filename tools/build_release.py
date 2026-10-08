@@ -16,6 +16,9 @@ Steps:
      is found (on PATH, in the usual install folders, or in the ISCC environment
      variable). Skipped with a warning otherwise.
   6. SHA256SUMS.txt for every file produced.
+
+For the build only, app/build_info.py holds the build date (Help ▸ About); it's deleted
+again afterwards and is git-ignored.
 """
 import hashlib
 import os
@@ -25,12 +28,14 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "EveFleetManagementTool.spec"
 ISS = ROOT / "installer" / "EveFleetManagementTool.iss"
 APP_NAME = "EveFleetManagementTool"
+BUILD_INFO = ROOT / "app" / "build_info.py"
 
 
 def read_version() -> str:
@@ -39,6 +44,14 @@ def read_version() -> str:
     if not match:
         sys.exit("FAIL: no __version__ in app/version.py")
     return match.group(1)
+
+
+def write_build_info(path: Path, now: datetime) -> str:
+    """app/build_info.py with the build date, for Help ▸ About. Returns the date as written."""
+    built = now.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    path.write_text('"""Written by tools/build_release.py for one build; not kept."""\n'
+                    f'BUILD_DATE = "{built}"\n', encoding="utf-8")
+    return built
 
 
 def find_iscc() -> Path | None:
@@ -83,9 +96,13 @@ def main() -> int:
     shutil.rmtree(scratch, ignore_errors=True)
     workpath, distpath = scratch / "build", scratch / "dist"
 
-    # 1-2. Build and check the bundle.
-    run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-         "--workpath", str(workpath), "--distpath", str(distpath), str(SPEC)])
+    # 1-2. Build and check the bundle, with the build date in it (Help ▸ About).
+    print(f"Build date: {write_build_info(BUILD_INFO, datetime.now(timezone.utc))}")
+    try:
+        run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
+             "--workpath", str(workpath), "--distpath", str(distpath), str(SPEC)])
+    finally:
+        BUILD_INFO.unlink(missing_ok=True)
     run([sys.executable, str(ROOT / "tools" / "check_bundle.py"), str(workpath)])
     app_dir = distpath / APP_NAME
     if not (app_dir / f"{APP_NAME}.exe").is_file():

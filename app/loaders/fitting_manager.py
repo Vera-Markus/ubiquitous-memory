@@ -97,6 +97,12 @@ class FittingManager:
             replacement = self._normalize_record(fitting_data, source=existing_source)
             replacement["fit_uid"] = fit_uid
             replacement["schema_version"] = CURRENT_SCHEMA
+            # The version counts changes to what's fitted (ESI features plan 29.4): the in-game copy's
+            # marker carries it, so an older copy can be found and offered the update.
+            changed = self.fit_signature(replacement) != self.fit_signature(existing)
+            version = int(existing.get("version", 1)) + (1 if changed else 0)
+            if version > 1:
+                replacement["version"] = version        # never written for a fitting that hasn't changed
             if "doctrine_metadata" not in replacement and "doctrine_metadata" in existing:
                 replacement["doctrine_metadata"] = existing["doctrine_metadata"]
             fittings[index] = replacement
@@ -267,6 +273,8 @@ class FittingManager:
             record["schema_version"] = fitting_data["schema_version"]
         if fitting_data.get("doctrine_metadata"):
             record["doctrine_metadata"] = fitting_data["doctrine_metadata"]
+        if fitting_data.get("version"):
+            record["version"] = int(fitting_data["version"])
         if fitting_data.get("renamed"):
             record["renamed"] = True        # a package fitting renamed here (UI rework 6.4); kept on updates (6.5)
         return record

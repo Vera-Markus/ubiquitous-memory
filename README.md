@@ -8,8 +8,53 @@ A Windows desktop tool for fleet organisers in EVE Online. Build a library of fi
 - **Ships:** every ship a character or corporation holds, by place and hangar. Give each ship the fitting it's meant to fly and an owner; see how it compares in an audit view and an EFT view.
 - **Doctrines:** every assigned pilot's ships, checked module by module against their role. A shopping list is built from what's missing, using what's already in the pilot's hangars first.
 - **Doctrine packages:** export a doctrine library to a file and import it on another machine, so a whole corp can share one.
+- **ESI features** (each can be turned off in Options): skill checks, hub prices, alliance contracts for missing ships, opening the market or a route in your game client, syncing fittings with the game, and noticing lost ships.
 
 **Help → User Guide** (F1) explains the workflows and how the tabs connect.
+
+## What's new in 1.6.0-rc6
+
+**Version numbers:** from this release the RC number is the minor version, so RC6 is **1.6.0**. RC1 to RC5 were all 1.0.0. **Help ▸ About** shows the version and when it was built.
+
+**Log in again:** this release asks for more permissions (see [What it accesses](#what-it-accesses-and-where-your-data-goes)). After installing, use **Characters ▸ Add Character** for each character. Until you do, the new features skip that character and say "log in again"; everything else works as before. There's no database rebuild: install over RC5, and your library, ships and settings are kept.
+
+**Tranquility's status:**
+- **A lamp** on the right of the tab row shows whether Tranquility is up. A red dot on it means CCP has posted an incident or maintenance; hover to read it.
+- **While the server's down** (including daily downtime), pulls and logins wait. Auto Pull tries again quietly every 5 minutes.
+- **A pull that keeps failing** goes into a short safe mode instead of hammering ESI. A character that still fails is skipped, and the rest are pulled.
+
+**ESI features: Options ▸ ESI Features.** Each can be switched off, and one that's off makes no calls. Losses and public contracts start off; the rest start on.
+- **Skill check:** the audit says when a pilot can't fly their fit ("Can't fly: Carriers V (has IV)") and **Copy Skill Plan** copies the missing levels for the game's skill planner. In the Ships tab, right-click a ship ▸ **Can <pilot> Fly This?**.
+- **Prices:** the shopping list is priced at Jita 4-4 (or another hub), from real sell orders, with a total in Fleet Totals.
+- **Contracts:**
+  - **Your stock:** your own item-exchange contracts count as stock.
+  - **Offers:** a missing ship is offered alliance and corporation contracts in its system, as an exact fit or a near fit (90%, with what's missing).
+  - **Use This Contract:** holds the purchase for 2 hours while you go and get it.
+  - **Capitals:** a missing capital is offered contracts within one jump. **Find a Hull…** searches up to 5 jumps, and public contracts too if you turn them on (slow the first time).
+- **Open in the game client:** from the shopping list:
+  - **Set Destination** and **Add Waypoint:** route to where your stock is.
+  - **Show in Market:** the item in the game's market window.
+  - **Mail Shopping List:** an in-game mail you send yourself.
+  - **Open in Game:** a contract.
+
+  The app checks the character is logged in to the game first.
+- **Fitting sync with the game:**
+  - **Fittings ▸ Import from Game…:** bring in the fits you've saved in game.
+  - **Save Fits to Game…:** right-click a pilot in the audit to save their doctrine fits to their in-game fittings. When you change a fitting later, the app offers to update their copy.
+  - **Fittings ▸ Deleted from Game…:** keeps each fit the app deletes in game for 14 days, with **Restore**.
+- **Losses** (off unless you turn it on):
+  - **After a pull,** the app reads recent killmails. When an assigned ship of that hull has disappeared, it asks whether that was the one lost. It never decides by itself.
+  - **A lost ship** shows as **Lost: replace** until a replacement turns up.
+  - **Options under it:** **Copy SRP Items** (the hull, then what was destroyed and dropped), an insurance estimate, and corporation losses for Directors.
+
+**Smaller changes:**
+- **Ships tab:**
+  - **Implants** tab: each clone, where it is, its implants by slot, and which of your implant sets it carries.
+  - **Audit pane:** right-click ▸ **Copy Missing Items** and **Show in Market**.
+- **Library:** the Fit box no longer repeats the hull, and the Fit and Station boxes are wider.
+- **Fittings tab:** the list starts collapsed.
+- **Options:** the panels sit in two columns.
+- **Right-click menus:** they list only what applies to the line you clicked, with no greyed-out entries.
 
 ## What's new in 1.0.0-rc5
 
@@ -76,7 +121,7 @@ Download from the [Releases](../../releases) page. Each release has:
 In PowerShell, in the folder you downloaded to:
 
 ```powershell
-Get-FileHash .\EveFleetManagementTool-1.0.0-setup.exe
+Get-FileHash .\EveFleetManagementTool-1.6.0-setup.exe
 ```
 
 The hash it prints must match the line for that file in `SHA256SUMS.txt` (the case of the letters doesn't matter).
@@ -94,10 +139,24 @@ When you add a character, you log in on CCP's own login page, in your browser. T
 | `esi-characters.read_corporation_roles.v1` | See whether the character is a Director of their corporation, so the app knows who can read its hangars. |
 | `esi-assets.read_corporation_assets.v1` | Read the corporation's hangars, to find ships held by the corporation. Only works for a Director; for anyone else it's never used. |
 | `esi-corporations.read_divisions.v1` | Read the names of the corporation's hangar divisions. Director only, like the hangars. |
+| `esi-skills.read_skills.v1` | **Skill check:** read the character's trained skills, to say whether they can fly a doctrine fit. |
+| `esi-skills.read_skillqueue.v1` | **Skill check:** read the skill queue, to count skills that finished since the last pull. |
+| `esi-location.read_online.v1` | **Open in the game client:** check the character is logged in before sending anything to the game. |
+| `esi-location.read_location.v1` | **Find a Hull:** start the capital contract search from the system the character is in. |
+| `esi-ui.open_window.v1` | **Open in the game client:** open a market window, a contract, a character's info, or a new mail (filled in, never sent) in the game. |
+| `esi-ui.write_waypoint.v1` | **Open in the game client:** set the autopilot destination or add waypoints. |
+| `esi-contracts.read_character_contracts.v1` | **Contracts:** read contracts the character can see, including ones assigned to their alliance, to offer replacement ships. |
+| `esi-contracts.read_corporation_contracts.v1` | **Contracts:** the same for the corporation's contracts. |
+| `esi-fittings.read_fittings.v1` | **Fitting sync:** read the character's saved fittings, to import them or see which are saved. |
+| `esi-fittings.write_fittings.v1` | **Fitting sync:** save doctrine fittings to the character, and delete ones it replaces (kept for 14 days to restore). Only when you confirm. |
+| `esi-killmails.read_killmails.v1` | **Losses** (off unless you turn it on): read the character's recent killmails, to spot assigned ships that were destroyed. |
+| `esi-killmails.read_corporation_killmails.v1` | **Losses:** the same for the corporation's ships. Director only. |
 
-That's all. It can't change anything in game and can't see your wallet or mail. Corporation hangars are only read for a character who is a Director.
+Each feature can be turned off in **Options ▸ ESI Features**; a feature that's off makes no calls.
 
-**Everything stays on your PC.** The app talks only to CCP: the login server, ESI, and CCP's static data download. There's no server of ours, no analytics and no telemetry. Everything it stores is in the `data` folder next to the program (for the installer: `%LOCALAPPDATA%\Programs\EVE Fleet Management Tool\data`):
+**What it can change in game:** only what you ask for, after you confirm. It can save and delete in-game fittings, set destinations and waypoints, and open windows in the client. It can't move items, accept or create contracts, send mail, or see your wallet. Corporation hangars and corporation killmails are only read for a character who is a Director.
+
+**Everything stays on your PC.** The app talks only to CCP: the login server, ESI, CCP's static data download, and CCP's status page (`status.eveonline.com`, run for CCP by Atlassian Statuspage), which it reads to know when Tranquility is down. There's no server of ours, no analytics and no telemetry. Everything it stores is in the `data` folder next to the program (for the installer: `%LOCALAPPDATA%\Programs\EVE Fleet Management Tool\data`):
 
 | Folder | Holds |
 |---|---|

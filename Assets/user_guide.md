@@ -40,6 +40,8 @@ Every ship one holder has. Pick the holder at the top: one of your characters, o
 - **Assigned only** hides ships with no fitting.
 - On the right, the selected ship's **Audit** and **EFT** tabs ([check one ship](#check-one-ship)).
 
+The **Implants** tab, beside **Ships**, shows the chosen character's clones: the active clone and each jump clone with where it is, its implants by slot, and which of your library's implant sets it carries ([implant sets](#implant-sets)). It also gives the home station and the last clone jump.
+
 ### The Library tab
 
 Where doctrines are put together.
@@ -66,7 +68,42 @@ A fitting for the **Capsule** with implants in it is an [implant set](#implant-s
 
 ### The Options tab
 
-**Connected Characters**, **Pull All**, **Auto Pull**, and **Appearance** (the colour theme).
+**Connected Characters**, **Pull All**, **Auto Pull**, **Appearance** (the colour theme) and **ESI Features**. Under **Pull All**, a line says what a pull is doing: which character, a safe-mode countdown, characters skipped.
+
+**ESI Features** turns features that use extra data from CCP on and off. A feature that's off makes no calls and shows nothing. So far:
+
+- **Skill check:** pulls each character's skills with their assets and checks them against their doctrine fittings ([skill check](#skill-check)).
+- **Open in the game client:** the shopping list can set a route, show the market or start a mail in a character's EVE client ([open in game](#open-in-the-game-client)).
+- **Contracts:** your own contracts count as stock, and a missing ship is offered your alliance's contracts ([contracts](#contracts)).
+  - **Public contracts in Find a Hull** (off unless you turn it on): the capital search reads public contracts too. It warns first, since a wide search is slow the first time.
+- **Prices**, with the **Trade hub** beside it: the shopping list priced at the hub's sell orders ([prices](#prices)).
+- **Fitting sync with the game:** import fits saved in the game, save doctrine fits to a pilot's in-game fittings, and keep them up to date ([fitting sync](#fitting-sync-with-the-game)).
+- **Losses** (off unless you turn it on): recognises assigned ships that were destroyed ([losses](#losses)). Under it, each off unless chosen: **SRP items**, **Insurance estimate**, **Corporation losses (Directors)**.
+
+### Tranquility's status
+
+The lamp on the right of the tab row shows Tranquility's status. The app checks it before anything calls CCP.
+
+- **Green:** online.
+- **Amber:** online with problems. In **VIP mode** (only CCP staff can log in), calls to CCP are off. When CCP reports **ESI degraded**, they still go ahead, but some may fail.
+- **Red:** offline, or the **daily downtime** (10:55–11:15 UTC; a good check from 11:10 ends it early).
+- **Grey:** unknown, e.g. no internet.
+
+A **red dot** on the lamp means CCP's status page has something new: an incident, or maintenance coming up. Hover over the lamp to read it. Click it to open the page, which also clears the dot. The dot clears itself after an hour too, or when the incident is resolved.
+
+**While Tranquility is down:**
+- **Pull All**, **Add Character** and **Check for DB Update** are off. Everything that works from what you've already pulled keeps working: the library, audits, exports.
+- **Auto Pull** waits quietly and tries again every 5 minutes. The hourly timer starts again from the pull that succeeds.
+
+**When a pull fails part way:**
+1. **The first failure** stops the pull. You're asked whether to **Retry All** characters.
+2. **If it fails again,** the app goes into a 5-minute **safe mode**, reading CCP's status page every 30 seconds.
+   - If the page reports a problem, pulls are **on hold** until Tranquility is back.
+   - If the page is clear, the pull carries on from the character that failed.
+3. **A character that fails again** is skipped, and the rest are pulled.
+4. **A character whose login has expired** is skipped straight away: add it again with **Characters ▸ Add Character**.
+
+The pull's summary lists anyone skipped. Their assets stay as they were at the last pull that reached them.
 
 ## Workflows
 
@@ -144,6 +181,26 @@ In [Ships](#the-ships-tab), select one ship with a fitting. On the right:
 
 Both views come from the same check as the Audit tab, so they always agree.
 
+Right-click the **Audit** view:
+
+- **Copy Missing Items**: what the ship lacks, one line per item, ready for the game's Multibuy window.
+- on a missing item ▸ **Show <item> in Market…**: the item in the market window of the ship's pilot ([open in the game client](#open-in-the-game-client); only while that's on in Options).
+
+### Skill check
+
+With **Options ▸ ESI Features ▸ Skill check** on, each pull also reads the characters' skills. A character added before the skill check needs adding again (**Characters ▸ Add Character**) so its login includes skills. Until then the audit shows "⚪ Skills not checked" under the character.
+
+**In the Doctrines audit,** a requirement whose pilot is missing skills gets a line under it:
+
+- **❌ Can't fly: Carriers V (has IV):** a skill for the hull or a fitted module is missing. On a hard requirement the pilot isn't ready.
+- **⚠ Skills to train: Drones V (has IV):** only drones, fighters, charges or cargo need it. A warning; the pilot is still ready.
+
+On a soft requirement everything missing is a warning.
+
+**Right-click** the line or its requirement ▸ **Copy Skill Plan**. It copies the missing levels, one per line, each skill's prerequisites first. Paste it into the game's skill planner with **import from clipboard**.
+
+**In the Ships tab,** right-click any ship ▸ **Can <pilot> Fly This?**. It checks the ship as it is, fitted modules and everything aboard, against its owner's skills (or the skills of the character holding it). It answers **Yes**, or lists what's missing and offers to copy the skill plan. A corporation's ship needs a character as its owner first.
+
 ### Shop for what's missing
 
 In the [Doctrines](#the-doctrines-tab) audit tree, right-click:
@@ -159,6 +216,91 @@ Before buying, the list uses what you already have. Anything the character holds
 - Select lines and press Delete (or right-click ▸ **Remove**) to take items off.
 
 Lines added once show **[x]** in the tree, so nothing is bought twice.
+
+### Prices
+
+With **Options ▸ ESI Features ▸ Prices** on, each line gets a price from the chosen **Trade hub** (Jita 4-4 unless changed), from its sell orders only:
+
+- A **Buy** line costs what that many would cost, cheapest orders first: 20,000 of something is priced at the 20,000 cheapest, not 20,000 × the lowest order. "only 15,000: ≈ 7.5 M" means the hub hasn't enough; "none at hub" means it sells none.
+- A **Pull from stock** line shows what its items would cost to buy.
+- **Fleet Totals** adds the estimate to buy (items with no sell orders left out, and it says how many) and what your stock covers.
+- A **capital hull** is never priced: it comes from contracts ([capitals](#capitals)).
+
+Prices are read again after 5 minutes. "Pricing at Jita 4-4…" shows while they load.
+
+### Contracts
+
+With **Options ▸ ESI Features ▸ Contracts** on, **Pull All** also reads your characters' contracts, and your corporations' (which include your alliance's). The first pull reads a lot of contracts' contents, so it can take a minute; later pulls read only new ones.
+
+- **Your own contracts are stock.** An item exchange you've put up and nobody has taken yet still holds your items: they're listed under **Pull from stock** as "in contract", after your hangar there. To use them, take the contract back first.
+- **A missing ship is offered alliance contracts.** Under a hard requirement whose ship is missing altogether (not one that's away or in the wrong place), the tree lists contracts assigned to your corporation or alliance in that system, the requirement's own station first:
+  - **Exact fit:** the hull and every fitted module (extras are fine).
+  - **Near fit:** the hull and at least 90% of the fitted modules, with what's missing and what's extra.
+
+  A contract that asks for items in return (PLEX, say) isn't offered.
+
+Right-click a contract:
+
+- **Use This Contract…**: for 2 hours the ship isn't bought. It comes off the shopping list if it was on it, and **Add Missing Items** asks first. The line counts down; right-click it ▸ **Cancel Contract Choice** to stop.
+  - **When one of your characters accepts it**, the line says "Contract accepted by …: waiting for the asset pull" until the ship turns up, however long that takes.
+  - **When the ship turns up,** the choice is done.
+  - **When the contract's gone** (someone else took it, or it expired), the line says so and the ship is bought as usual.
+- **Open in Game…**: opens it in a character's client. The game shows one contract window at a time, so the window steps through the offers with **Open Next**.
+
+### Fitting sync with the game
+
+With **Options ▸ ESI Features ▸ Fitting sync with the game** on:
+
+- **Fittings ▸ Import from Game…**: pick a character to see the fits they've saved in game, with a hull filter and a search. Fits already in the library are marked. Click fits to tick them, then **Import Ticked**. Ticking one that's already there asks first.
+- **Doctrines audit ▸ right-click a pilot ▸ Save Fits to Game…**: the fittings that pilot flies in the audit, and whether each is in their in-game fittings. The ones not saved, or saved in an older version, are ticked. **Save Ticked…** saves them after a confirm.
+- **Keeping them up to date:** each fit saved this way carries a short tag at the end of its description, like `[EFMT 1000 v3]`, naming its library fitting and version. When you change a fitting in the Library, pilots with an older copy are offered **Replace the in-game fitting with the update?**
+- **Fittings ▸ Deleted from Game…**: the game has no way to edit a saved fit, so replacing one deletes the old copy and saves the new one. Every fit the app deletes is kept here for 14 days, and **Restore** saves it again.
+
+The game's list of fits can take up to 5 minutes to show a change. The app remembers what it saved and deleted in the meantime.
+
+### Losses
+
+With **Options ▸ ESI Features ▸ Losses** on, **Pull All** also reads each character's recent killmails.
+
+A loss is matched to a ship of the same hull that has an assigned fitting, was seen in an earlier pull and is gone now. The ship can belong to any of your linked characters, since one may have flown another's, or, with **Corporation losses** on, to the corporation. The fit isn't compared: modules get swapped and ammo gets used. <Personal> ships and ships whose fitting no requirement uses are never matched.
+
+The app never decides on its own. After the pull it asks about each ship that could be it:
+- **Yes:** it's **💥 Lost <date>: replace** in the audit, and greyed out under **Lost ships** in the Ships tab.
+- **No:** it isn't, and the next one (if any) is asked about.
+- **Cancel:** decide later. Each reads **Possibly lost** until you right-click the right one ▸ **This One Was Lost**.
+
+Right-click a lost or possibly lost ship ▸ **It Wasn't This One** to take it back.
+- **When it clears:** the loss stops showing once its requirement passes or only warns (a replacement is there, or on its way), or after 30 days, when the ship's assignment is forgotten.
+- **SRP items** (on): right-click a lost ship ▸ **Copy SRP Items**: the hull, then what was destroyed and what dropped.
+- **Insurance estimate** (on): the loss line adds what Platinum insurance pays out for the hull.
+- **A lost Titan or Supercarrier** gets the app's condolences, and the offer to remove its requirement while the pilot saves up for the next one. No contracts are offered for them.
+
+### Capitals
+
+Carriers, Force Auxiliaries, Dreadnoughts (Lancers too), Rorquals and Jump Freighters have their **hull** from contracts, never the market. Titans, Supercarriers and Black Ops follow the usual rules.
+
+- **In the audit tree,** a missing capital is offered alliance contracts **within one jump** (its range at Jump Drive Calibration V), nearest first. The hull is enough, since the modules come from the hub.
+- **Find a Hull…** (right-click that line, or the hull's Buy line on the shopping list) opens a search:
+  - **Centre:** where the chosen character is (asked of the game), or any system you pick.
+  - **What it reads:** alliance contracts within **5 jumps**. With **Options ▸ ESI Features ▸ Public contracts in Find a Hull** on, public ones too, nearest first: the list fills in as their contents are read. The first wide search can take 5 to 10 minutes; contracts read once aren't read again.
+  - **The slider** narrows the list to 1 to 5 jumps at once.
+  - **Each contract** says what it holds: **Exact fit**, **Near fit** (with what's missing), another of your fittings for the hull by name, **Hull + rigs**, or **Hull**. Contracts in structures the app can't place are listed last.
+  - **Open in Game…** opens the selected one, with **Open Next** for the rest.
+
+Jumps are a straight-line estimate: the distance divided by the hull's range, rounded up. Gates and routes aren't counted.
+
+### Open in the game client
+
+With **Options ▸ ESI Features ▸ Open in the game client** on, right-click a shopping list line:
+
+- a **Pull from stock** line ▸ **Set Destination…** or **Add Waypoint…**: its station or structure, in the autopilot route.
+- a **Buy** line ▸ **Show in Market…**: the item in the market window. Now and then the game doesn't show it; the window stays open with **Send Again**.
+- in the audit tree, a missing item ▸ **Show <item> in Market…**: the same, for the pilot above it.
+- any line ▸ **Mail Shopping List…**: a new in-game mail holding the list, addressed to the pilots it's for. Nothing is sent until you press Send in game.
+
+A small window asks which character's client to use. It starts on the line's pilot and shows who is **in game**. EVE only acts on a character who's logged in and in space or docked (not at character selection), so the app checks first and sends nothing to anyone else. A character who has just logged in can read as offline for up to a minute.
+
+A character added before this feature needs adding again (**Characters ▸ Add Character**) so its login includes it.
 
 ### Set up a capital
 

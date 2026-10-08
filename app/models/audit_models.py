@@ -113,6 +113,9 @@ class ShipRequirementResult:
     where: str = ""                             # "Jita IV - Moon 4 - Caldari Navy Assembly Plant (deliveries)"
     last_seen: Optional[Dict[str, Any]] = None  # a missing ship's last sighting
     missing_since: Optional[str] = None
+    # Losses (ESI features plan 30.3): a missing ship a killmail matched: {"state": "lost" or "possibly",
+    # "date", "killmail_id", "insurance"?}. Set by the Doctrines tab after the audit.
+    loss: Optional[Dict[str, Any]] = None
     # What the audit compared, for the EFT view (plan 19.2): aboard, expected, and what aboard
     # the fitting doesn't call for at all.
     contents: List[EftItem] = field(default_factory=list)
@@ -167,6 +170,20 @@ class RequirementResult:
     covered_by: Optional[Dict[str, Any]] = None
     # Its ships exist but are in the wrong place (in the system, or deployed): a failure to move, not to buy (H9).
     misplaced: bool = False
+    # The skill check (ESI features plan 26.5): "" when it's off, "unchecked" when the pilot's skills
+    # haven't been pulled, "checked" with the result in skills (a services.skill_requirements.SkillCheck).
+    skill_state: str = ""
+    skills: Optional[Any] = None
+
+    @property
+    def skill_failure(self) -> Optional[str]:
+        """
+        "hard" when the pilot can't fly the hull or a fitted module and the requirement decides
+        readiness (D1.1), "soft" for anything else missing, None when nothing is.
+        """
+        if self.skills is None or self.skills.ok:
+            return None
+        return "hard" if self.skills.hard and self.counts_for_readiness else "soft"
 
     @property
     def counts_for_readiness(self) -> bool:
@@ -210,4 +227,5 @@ class AuditResult:
         True when every hard requirement is ready. A warning, a soft failure (a ship to move, H9) and
         any soft requirement still count as ready.
         """
-        return all(is_ready(r.status) or r.failure == "soft" for r in self.requirement_results if r.counts_for_readiness)
+        return all((is_ready(r.status) or r.failure == "soft") and r.skill_failure != "hard"
+                   for r in self.requirement_results if r.counts_for_readiness)

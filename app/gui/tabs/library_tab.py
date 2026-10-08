@@ -179,7 +179,8 @@ class LibraryTab:
                                               priority=priority)
             self._refresh_library_requirement_list()
             self._log(f"[INFO] Added {'soft ' if priority == 'soft' else ''}requirement to role '{role_name}': "
-                      f"{fit_name} @ {system if system_id is not None else '<Any System>'} @ "
+                      f"{self.library_hull_combo.get()} - {fit_name} @ "
+                      f"{system if system_id is not None else '<Any System>'} @ "
                       f"{station if location_id is not None else '<Any Station>'}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -257,7 +258,9 @@ class LibraryTab:
         self.req_menu.delete(0, tk.END)
         covered = covering(self.role_manager.get_role(role_uid), requirement)
         if covered is not None:         # locked soft by a wider hard requirement (P4)
-            self.req_menu.add_command(label=f"Soft: covered by {self._area_name(covered)}", state=tk.DISABLED)
+            area = self._area_name(covered)     # not a disabled entry: Windows draws those hard to read
+            self.req_menu.add_command(label=f"Soft: covered by {area}", command=lambda: messagebox.showinfo(
+                "Soft Requirement", f"This stays soft while the hard requirement for {area} covers it."))
         else:
             self.req_menu.add_command(label="Make Hard" if soft else "Make Soft",
                                       command=lambda: self._handle_set_priority("hard" if soft else "soft"))
@@ -453,7 +456,7 @@ class LibraryTab:
         self.library_hull_combo.grid(row=0, column=1, padx=5, pady=2)
 
         ttk.Label(entry_grid, text="Fit:").grid(row=0, column=2, sticky=tk.W, padx=2, pady=2)
-        self.library_fit_combo = ttk.Combobox(entry_grid, width=20, state="readonly")
+        self.library_fit_combo = ttk.Combobox(entry_grid, width=30, state="readonly")      # wider: fit names are long
         self.library_fit_combo.grid(row=0, column=3, padx=5, pady=2)
 
         # Row 2: System and Station
@@ -462,7 +465,7 @@ class LibraryTab:
         self.library_system_combo.grid(row=1, column=1, padx=5, pady=2)
 
         ttk.Label(entry_grid, text="Station:").grid(row=1, column=2, sticky=tk.W, padx=2, pady=2)
-        self.library_station_combo = ttk.Combobox(entry_grid, width=20, state="readonly")
+        self.library_station_combo = ttk.Combobox(entry_grid, width=30, state="readonly")  # station names too
         self.library_station_combo.grid(row=1, column=3, padx=5, pady=2)
 
         # Hull and System have long lists: type to narrow them, and a name typed exactly is
@@ -557,7 +560,7 @@ class LibraryTab:
         if self._hull_ahead.exact(hull_name) == hull_name:
             self._hull_ahead.accepted = hull_name
         fit_data = sorted(
-            (f"{f.get('hull', 'Unknown')} - {f.get('fit_name')} ({f.get('fit_uid')})", f.get("fit_uid"))
+            (f"{f.get('fit_name')} ({f.get('fit_uid')})", f.get("fit_uid"))     # the hull is in the box beside it
             for f in self._requirement_role_fittings() if hull_name and f.get("hull") == hull_name)
         self.library_fit_uid_map = dict(fit_data)
         fit_names = [name for name, _ in fit_data]
@@ -882,8 +885,10 @@ class LibraryTab:
             assign.add_command(label=name, command=lambda c=character_id, n=name:
                                self._assign_character(doctrine_uid, role_uid, c, n))
         if assign.index("end") is None:
-            assign.add_command(label="(every connected character is assigned)", state=tk.DISABLED)
-        menu.add_cascade(label="Assign character", menu=assign)
+            menu.add_command(label="Assign character", command=lambda: messagebox.showinfo(
+                "Assign character", "Every connected character is already assigned to this role."))
+        else:
+            menu.add_cascade(label="Assign character", menu=assign)
         menu.add_separator()
         menu.add_command(label=f"Remove {tree.item(item_id, 'text')} from the doctrine",
                          command=lambda: self._remove_role_from_tree(item_id))

@@ -1,31 +1,82 @@
 import asyncio
 import logging
+from dataclasses import dataclass
 import threading
+import time
 import tkinter as tk
 from datetime import datetime, timezone
 from tkinter import filedialog, ttk
 from app.gui import themed_dialogs as messagebox
 
 from app.gui.audit_presenter import (MISSING_ITEMS, Node, carried_by_item, character_icon, fuel_summary_node,
-                                     packed_node, requirement_node)
+                                     packed_node, requirement_node, skills_note)
 from app import paths
 from app.asset_handling.corp_pull import load_corporations
 from app.loaders.role_manager import fitting_in_use
 from app.services.implant_rules import is_implant_set, set_name
+from app.services.skill_requirements import SkillCheck
 from app.services.tracking import TrackingContext
 
+USE_CONTRACT, OPEN_CONTRACT, CANCEL_CONTRACT = "Use This Contract…", "Open in Game…", "Cancel Contract Choice"
+FIND_A_HULL = "Find a Hull…"
+SAVE_TO_GAME = "Save Fits to Game…"
+THIS_ONE_LOST, NOT_THIS_ONE, COPY_SRP = "This One Was Lost", "It Wasn't This One", "Copy SRP Items"
+CONTRACT_NOTE = "contract note"     # the data of "The chosen contract is gone" (not the requirement's reason line)
 ASSIGN_LABEL = "Assign the Fitting to"
-ADOPT_LABEL = "Make the System It's In Its Home"
-from app.models.audit_models import AuditResult, RequirementResult, ShipRequirementResult
+COPY_SKILL_PLAN = "Copy Skill Plan"
+SET_DESTINATION, ADD_WAYPOINT, SHOW_IN_MARKET = "Set Destination…", "Add Waypoint…", "Show in Market…"
+MAIL_LIST = "Mail Shopping List…"
+from app.models.audit_models import (AuditResult, ItemShortfall, RequirementResult, RequirementStatus,
+                                     ShipRequirementResult)
 from app.gui.type_ahead import TypeAhead
 from app.gui.dialogs.onboard_dialog import AdoptDialog, OnboardDialog
 from app.services.onboarding import PERSONAL, adoption_warnings, apply_adoption, apply_onboarding, plan_system
+from app.services import esi_features
+from app.services import prices
+from app.services.contracts import EXACT, ContractBook, ContractChoices, Offer, left_text
 from app.services.shopping_list_service import ShoppingListService, item_key, items_text, merge_items, without_items
-from app.services.stock import StockIndex, list_text, merge_pulls
+from app.services.stock import PullLine, StockIndex, list_text, merge_pulls
 from app.gui import style as ui_style
 from app.gui.status_icons import StatusIcons, mark, shown_text, unmark
 
 logger = logging.getLogger(__name__)
+
+
+
+@dataclass
+class OfferRef:
+    """An alliance contract line in the tree: the offer, whose requirement, and the list it's in (Open Next)."""
+    offer: Offer
+    character_id: int
+    req_uid: int
+    label: str
+    offers: list
+    index: int
+
+
+@dataclass
+class ChoiceRef:
+    """A chosen contract's line: whose requirement, and the choice."""
+    character_id: int
+    req_uid: int
+    choice: dict
+
+
+
+@dataclass
+class HullSearchRef:
+    """A capital requirement's contracts line: Find a Hull… searches from its system, for its pilot."""
+    hull_type_id: int
+    fitting: dict
+    character_id: int
+    system_id: int
+
+
+def separate(menu):
+    """A separator, unless the menu is empty or already ends with one."""
+    end = menu.index(tk.END)
+    if end is not None and menu.type(end) != "separator":
+        menu.add_separator()
 
 
 class AuditTab:
@@ -54,6 +105,16 @@ class AuditTab:
         self.buy_items = []             # [ShoppingListItem]
         self.last_tracking = None       # the last audit's TrackingContext (its universe is the stock)
         self._shopping_rows = {}        # shopping list row -> item_key
+        self._row_lines = {}            # shopping list row -> its PullLine or ShoppingListItem (plan 27.2)
+        self._buy_pilots = {}           # item_key -> the character whose ship it's bought for (the first)
+        self._hub_orders = {}           # (hub, type ID) -> its sell orders there, or None if unread (plan 28.1)
+        self._hub_read = {}             # (hub, type ID) -> when they were read: older than the TTL, read again
+        self._price_job = 0             # the latest pricing run; older ones' results are dropped
+        self.price_status = ""          # "Pricing at Jita 4-4: 4 of 12…", or why there are no prices
+        # Contracts (plan 28.3-28.5): the saved contracts, read once per tree drawn; the 2-hour choices.
+        self._contract_book = None
+        self.contract_choices = ContractChoices()
+        self._choice_rows = {}          # tree item -> (character ID, req_uid): its countdown is redrawn
         self._node_data = {}            # tree item -> the ShipRequirementResult behind a ship row
         self._row_priority = {}         # ship row -> its requirement's priority ("hard" or "soft")
         self._audit_running = False
@@ -63,6 +124,7 @@ class AuditTab:
         self.last_carried_ships = {}    # character ID -> [CarriedShip]
 
         self._setup_audit_tab()
+        self.root.after(60_000, self._tick_choices)     # the chosen contracts' countdowns (28.4)
 
     # --- Shared state owned by EVEFleetGUI ---------------------------------
 
@@ -169,28 +231,10 @@ class AuditTab:
 
         self.audit_tree.bind("<Button-3>", self._on_audit_tree_right_click)
 
-        # Context menu for audit tree
+        # Context menu for audit tree: built on each right-click from what applies to the row
+        # (_build_audit_menu). No disabled entries: Windows draws them etched, hard to read on dark menus.
         self.audit_tree_context_menu = tk.Menu(self.audit_tree, tearoff=0)
-        self.audit_tree_context_menu.add_command(
-            label="Add Missing Items to Shopping List", 
-            command=self._handle_add_missing_items_to_list
-        )
-        self.audit_tree_context_menu.add_command(
-            label="Add Every Missing Item in This Audit",
-            command=self._handle_add_all_missing_items
-        )
-        self.audit_tree_context_menu.add_separator()
-        self.audit_tree_context_menu.add_command(
-            label="Clear Shopping List",
-            command=self._handle_clear_shopping_list
-        )
-        # A NOT CHECKED requirement's hulls: give them its fitting (UI thoughts plan 18.4).
-        self.audit_tree_context_menu.add_separator()
         self.assign_menu = tk.Menu(self.audit_tree_context_menu, tearoff=0)
-        self.audit_tree_context_menu.add_cascade(label=ASSIGN_LABEL, menu=self.assign_menu)
-        # A ship with no Home (assigned before Homes): Adopt makes the system it's in its Home (23.4).
-        self.audit_tree_context_menu.add_command(label=ADOPT_LABEL, command=self._handle_adopt, state=tk.DISABLED)
-        self._adopt_index = self.audit_tree_context_menu.index(tk.END)
 
         # --- RIGHT SIDE: Shopping List Panel ---
         right_pane = ttk.Frame(main_paned_window)
@@ -201,11 +245,14 @@ class AuditTab:
 
         list_frame = ttk.Frame(right_pane)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        self.shopping_tree = ttk.Treeview(list_frame, columns=("item", "qty"), show="headings", selectmode="extended")
+        self.shopping_tree = ttk.Treeview(list_frame, columns=("item", "qty", "price"), show="headings",
+                                          selectmode="extended")
         self.shopping_tree.heading("item", text="Item", anchor=tk.W)
         self.shopping_tree.heading("qty", text="Quantity", anchor=tk.E)
+        self.shopping_tree.heading("price", text="Price", anchor=tk.E)
         self.shopping_tree.column("item", anchor=tk.W, stretch=True, width=320)
         self.shopping_tree.column("qty", anchor=tk.E, stretch=False, width=80)
+        self.shopping_tree.column("price", anchor=tk.E, stretch=False, width=110)
         shopping_scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.shopping_tree.yview)
         self.shopping_tree.configure(yscrollcommand=shopping_scroll.set)
         self.shopping_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -230,7 +277,7 @@ class AuditTab:
 
         self.btn_copy_shopping_list = ttk.Button(
             button_frame, 
-            text="Copy Shopping List", 
+            text="Copy Shopping List",
             command=self._handle_copy_shopping_list,
             state=tk.DISABLED
         )
@@ -267,17 +314,142 @@ class AuditTab:
 
         # Store the clicked item for the context menu actions
         self._last_clicked_item = item_id
+        self._build_audit_menu(item_id)
+        self.audit_tree_context_menu.post(event.x_root, event.y_root)
+
+    def _build_audit_menu(self, item_id):
+        """The right-click menu for this row: the shopping list's entries, then only what applies here."""
+        menu = self.audit_tree_context_menu
+        if menu.index(tk.END) is not None:
+            menu.delete(0, tk.END)
+        menu.add_command(label="Add Missing Items to Shopping List", command=self._handle_add_missing_items_to_list)
+        menu.add_command(label="Add Every Missing Item in This Audit", command=self._handle_add_all_missing_items)
+        menu.add_separator()
+        menu.add_command(label="Clear Shopping List", command=self._handle_clear_shopping_list)
+        menu.add_separator()
+        # A NOT CHECKED requirement's hulls: give them its fitting (UI thoughts plan 18.4).
         target = self._assign_target(item_id)
         self._fill_assign_menu(target)
-        self.audit_tree_context_menu.entryconfigure(ASSIGN_LABEL, state=tk.NORMAL if target else tk.DISABLED)
+        if target:
+            menu.add_cascade(label=ASSIGN_LABEL, menu=self.assign_menu)
+        # A ship with no Home (assigned before Homes): Adopt makes the system it's in its Home (23.4).
         ship = self._node_data.get(item_id)
         adopt = getattr(ship, "adopt_system_id", None) if isinstance(ship, ShipRequirementResult) else None
-        self.audit_tree_context_menu.entryconfigure(
-            self._adopt_index, state=tk.NORMAL if adopt else tk.DISABLED,
-            label=f"Make {self.app.evedb_loader.get_system_name(adopt)} Its Home" if adopt else ADOPT_LABEL)
+        if adopt:
+            menu.add_command(label=f"Make {self.app.evedb_loader.get_system_name(adopt)} Its Home",
+                             command=self._handle_adopt)
+        # A pilot missing skills: the missing levels for the game's skill planner (ESI features plan 26.7).
+        if self._skill_check_at(item_id):
+            menu.add_command(label=COPY_SKILL_PLAN, command=self._handle_copy_skill_plan)
+        self._fill_market_entry(item_id)
+        if menu.type(tk.END) == "separator":
+            menu.delete(tk.END)
 
-        # Show context menu at the cursor position
-        self.audit_tree_context_menu.post(event.x_root, event.y_root)
+    def menu_entries(self, item_id) -> list:
+        """The labels the row's right-click menu offers, for the harness."""
+        self._build_audit_menu(item_id)
+        menu = self.audit_tree_context_menu
+        return [menu.entrycget(i, "label") for i in range(menu.index(tk.END) + 1) if menu.type(i) != "separator"]
+
+    def _fill_market_entry(self, item_id):
+        """
+        After the fixed entries: on a lost ship, a pilot, a contract offer or a chosen contract, its
+        entries (plans 28.4, 29.3, 30.3); then Show <item> in Market… on a missing item line. None of
+        it while its feature's off.
+        """
+        menu = self.audit_tree_context_menu
+        data = self._node_data.get(item_id)
+        values = self.audit_tree.item(item_id, "values") if item_id else ()
+        if isinstance(data, ShipRequirementResult) and data.loss and esi_features.enabled("losses"):
+            separate(menu)
+            if data.loss["state"] == "possibly":
+                menu.add_command(label=THIS_ONE_LOST, command=lambda: self._handle_this_one_lost(data))
+            menu.add_command(label=NOT_THIS_ONE, command=lambda: self._handle_not_this_one(data))
+            if esi_features.enabled("losses_srp"):
+                menu.add_command(label=COPY_SRP, command=lambda: self._handle_copy_srp(data.loss["killmail_id"]))
+        if len(values) == 2 and str(values[0]).isdigit() and esi_features.enabled("fittings"):
+            # A pilot's row: their doctrine fittings, saved to their in-game fittings (plan 29.3).
+            separate(menu)
+            menu.add_command(label=SAVE_TO_GAME, command=lambda: self._handle_save_to_game(str(values[0])))
+            return
+        if isinstance(data, HullSearchRef):
+            separate(menu)
+            menu.add_command(label=FIND_A_HULL, command=lambda: self.app.find_a_hull(
+                data.hull_type_id, data.fitting, data.character_id, data.system_id))
+            return
+        if isinstance(data, OfferRef):
+            separate(menu)
+            menu.add_command(label=USE_CONTRACT, command=lambda: self._handle_use_contract(data))
+            if esi_features.enabled("client"):
+                menu.add_command(label=OPEN_CONTRACT, command=lambda: self._handle_open_contract(data))
+        elif isinstance(data, ChoiceRef):
+            separate(menu)
+            menu.add_command(label=CANCEL_CONTRACT, command=lambda: self._handle_cancel_contract(data))
+            if esi_features.enabled("client"):
+                menu.add_command(label=OPEN_CONTRACT, command=lambda: self._handle_open_choice(data))
+        if esi_features.enabled("client") and isinstance(data, ItemShortfall):
+            separate(menu)
+            menu.add_command(label=f"Show {data.name} in Market…",
+                             command=lambda: self._handle_show_market_line(item_id, data))
+
+    def pilot_fittings(self, character_id: str):
+        """The fittings the pilot flies in this audit (each once, implant sets left out), by name."""
+        seen, out = set(), []
+        for result in self.last_audit_results:
+            if str(result.character_id) != str(character_id):
+                continue
+            for req in result.requirement_results:
+                fit_uid = fitting_in_use(req.requirement_details or {})
+                fitting = self.fitting_manager.get_fitting(fit_uid) if fit_uid is not None else None
+                if fitting and fit_uid not in seen and not is_implant_set(fitting):
+                    seen.add(fit_uid)
+                    out.append(fitting)
+        return sorted(out, key=lambda f: (f.get("hull", ""), f["fit_name"]))
+
+    def _handle_save_to_game(self, character_id: str):
+        from app.gui.dialogs.game_fittings_dialogs import SaveToGameDialog
+        fittings = self.pilot_fittings(character_id)
+        if not fittings:
+            messagebox.showinfo(SAVE_TO_GAME.rstrip("…"), "This pilot has no fittings in this audit.")
+            return
+        if self.app._guard(SAVE_TO_GAME.rstrip("…")):
+            doctrine = self.audit_doctrine_combo.get() if self.audit_mode == "doctrine" else ""
+            self.app.game_dialog = SaveToGameDialog(self.app, character_id, fittings, doctrine)
+
+    def _pilot_at(self, item_id):
+        """The character whose row is above the tree item (its pilot), or None."""
+        while item_id:
+            values = self.audit_tree.item(item_id, "values")
+            if len(values) == 2 and str(values[0]).isdigit():
+                return int(values[0])
+            item_id = self.audit_tree.parent(item_id)
+        return None
+
+    def _handle_show_market_line(self, item_id, shortfall):
+        self.app.open_in_game(SHOW_IN_MARKET.rstrip("…"), shortfall.name,
+                              lambda client, char_id: client.show_market(char_id, shortfall.type_id),
+                              self._pilot_at(item_id))
+
+    # --- Copy Skill Plan (ESI features plan 26.7) -----------------------------------------------
+
+    def _skill_check_at(self, item_id):
+        """The skill check on the row, or on its requirement's skill line."""
+        data = self._node_data.get(item_id)
+        if isinstance(data, SkillCheck):
+            return data
+        for child in self.audit_tree.get_children(item_id):
+            if isinstance(self._node_data.get(child), SkillCheck):
+                return self._node_data[child]
+        return None
+
+    def _handle_copy_skill_plan(self):
+        check = self._skill_check_at(getattr(self, "_last_clicked_item", None))
+        if check is None:
+            return
+        lines = self.app.audit_engine.skill_requirements().plan(check)
+        self.root.clipboard_clear()
+        self.root.clipboard_append("\n".join(lines))
+        self._log(f"[INFO] Skill plan copied: {len(lines)} level(s). Paste it into the game's skill planner.")
 
     # --- assigning a hull from a NOT CHECKED requirement (UI thoughts plan 18.4) -----------------
 
@@ -385,6 +557,12 @@ class AuditTab:
         if key in self._added_ships:
             self._log(f"[INFO] Already on the shopping list: {row_text}")
             return
+        character = key[1] if isinstance(key, tuple) and key[0] == "hull" else None
+        choice = self.contract_choices.get(character, key[2]) if character and str(character).isdigit() else None
+        if choice is not None and not messagebox.askyesno(
+                "Add Missing Items", f"A contract is chosen for this ship ({left_text(self.contract_choices.left(choice))} "
+                                     "left). Add a whole replacement to the shopping list anyway?"):
+            return
         service = self._shopping_service()
         if isinstance(result, ShipRequirementResult):
             items = service.items_for_ship(result)
@@ -469,6 +647,7 @@ class AuditTab:
         for share in self._contributions.values():
             items = merge_items(items, share)
         self.shopping_items = items
+        self._buy_pilots = {}
         universe = getattr(self.last_tracking, "universe", None)
         if universe is None:
             self.pull_lines, self.buy_items = [], list(items)
@@ -476,6 +655,11 @@ class AuditTab:
         rules = self.audit_engine.rules
         index = StockIndex(universe, self.app.evedb_loader.location_label, self.app.evedb_loader.get_type_name,
                            rules.equivalence_key if rules is not None else None)
+        book = self._book()
+        for character_id, contract in (book.own if book is not None else []):
+            index.add_contract(character_id, contract.system_id, contract.location_id,
+                               self.app.evedb_loader.location_label(contract.location_id), contract.contract_id,
+                               contract.title, contract.items)
         service = self._shopping_service()
         pulls, buy = [], []
         for key, share in self._contributions.items():
@@ -483,7 +667,11 @@ class AuditTab:
             needs = {item_key(i): (i.item_name, i.quantity) for i in share if i.type_id is not None}
             taken, left = index.allocate(holder, system, needs)
             pulls += taken
-            buy = merge_items(buy, service.items(left) + [i for i in share if i.type_id is None])
+            bought = service.items(left) + [i for i in share if i.type_id is None]
+            if holder is not None and holder.get("kind") == "character":
+                for item in bought:
+                    self._buy_pilots.setdefault(item_key(item), holder["id"])
+            buy = merge_items(buy, bought)
         self.pull_lines, self.buy_items = merge_pulls(pulls), buy
 
     def _on_shopping_right_click(self, event):
@@ -492,7 +680,64 @@ class AuditTab:
             return
         if row not in self.shopping_tree.selection():
             self.shopping_tree.selection_set(row)
+        self._fill_shopping_menu(row)
         self.shopping_menu.post(event.x_root, event.y_root)
+
+    def _fill_shopping_menu(self, row):
+        """Remove, then (plan 27.2) what the line can open in the game client: a Pull line's
+        place as destination or waypoint, a Buy line's market; then the whole list as a mail (27.3).
+        Not shown while the feature's off."""
+        if self.shopping_menu.index(tk.END) >= 1:      # an empty range would delete Remove's command too
+            self.shopping_menu.delete(1, tk.END)
+        if not esi_features.enabled("client"):
+            return
+        line = self._row_lines.get(row) if len(self.shopping_tree.selection()) == 1 else None
+        self.shopping_menu.add_separator()
+        if isinstance(line, PullLine) and line.location_id:
+            self.shopping_menu.add_command(label=SET_DESTINATION,
+                                           command=lambda: self._handle_route(line, add=False))
+            self.shopping_menu.add_command(label=ADD_WAYPOINT, command=lambda: self._handle_route(line, add=True))
+        elif line is not None and not isinstance(line, PullLine) and line.type_id is not None:
+            if self.app.galaxy.is_capital(line.type_id):
+                self.shopping_menu.add_command(label=FIND_A_HULL, command=lambda: self.app.find_a_hull(
+                    line.type_id, None, self._buy_pilots.get(item_key(line))))
+            self.shopping_menu.add_command(label=SHOW_IN_MARKET, command=lambda: self._handle_show_market(line))
+        self.shopping_menu.add_command(label=MAIL_LIST, command=self._handle_mail_list)
+
+    def _handle_route(self, line, add: bool):
+        """Set Destination or Add Waypoint: the station or structure a Pull line's stock is in."""
+        def send(client, char_id):
+            if add:
+                return client.add_waypoint(char_id, line.location_id)
+            return client.set_destination(char_id, line.location_id)
+        self.app.open_in_game(ADD_WAYPOINT.rstrip("…") if add else SET_DESTINATION.rstrip("…"),
+                              line.place, send, line.character_id)
+
+    def list_pilots(self):
+        """The characters the list is for, in the order their lines come: the mail's recipients."""
+        pilots = [p.character_id for p in self.pull_lines] + [self._buy_pilots.get(item_key(i))
+                                                               for i in self.buy_items]
+        return list(dict.fromkeys(int(p) for p in pilots if p is not None))
+
+    def _handle_mail_list(self):
+        """27.3: a new in-game mail holding the list, to the pilots it's for; sent (or not) in game."""
+        pilots = self.list_pilots()
+        names = self.app.auth_service.index
+        doctrine = self.audit_doctrine_combo.get() if self.audit_mode == "doctrine" else ""
+        subject = "Shopping list" + (f": {doctrine}" if doctrine else "")
+        body = self.shopping_list_text()
+        to = ", ".join(names.get(str(p), f"Character {p}") for p in pilots) or "yourself"
+
+        def send(client, char_id):
+            return client.new_mail(char_id, pilots or [int(char_id)], subject, body)
+        self.app.open_in_game("Mail Shopping List", f"{subject}, to {to}. It opens as a new mail to send in game.",
+                              send, pilots[0] if pilots else None)
+
+    def _handle_show_market(self, item):
+        """Show in Market: the Buy line's item in the market window."""
+        self.app.open_in_game(SHOW_IN_MARKET.rstrip("…"), item.item_name,
+                              lambda client, char_id: client.show_market(char_id, item.type_id),
+                              self._buy_pilots.get(item_key(item)))
 
     def _handle_remove_shopping_items(self):
         """
@@ -536,7 +781,7 @@ class AuditTab:
     def _unmark_added(self, ship_item):
         """Undo _mark_added: drop the "[x] " from a ship's (or missing hull's) lines."""
         if isinstance(self._node_data.get(ship_item), RequirementResult):
-            lines = list(self.audit_tree.get_children(ship_item))[:1]     # the reason line, not the offers
+            lines = self._reason_line(ship_item)
         else:
             lines = [line for child in self.audit_tree.get_children(ship_item)
                      if tuple(self.audit_tree.item(child, "values")) == (MISSING_ITEMS,)
@@ -555,10 +800,22 @@ class AuditTab:
         """What Copy Multibuy puts on the clipboard: only what has to be bought, ready for the game."""
         return items_text(self.buy_items)
 
+    def _reason_line(self, requirement_item):
+        """[the "❌ No Archon in Jita" line] under a requirement with no ship: not its skill line before it,
+        nor its contract lines after it (plan 28.3)."""
+        for child in self.audit_tree.get_children(requirement_item):
+            data = self._node_data.get(child)
+            if isinstance(data, (SkillCheck, OfferRef, ChoiceRef, HullSearchRef)) or data == CONTRACT_NOTE:
+                continue
+            if self.audit_tree.item(child, "text").startswith("📜"):
+                continue
+            return [child]
+        return []
+
     def _mark_added(self, ship_item):
         """Show "[x]" on the missing item lines of a ship (or the missing hull line) that's on the shopping list."""
         if isinstance(self._node_data.get(ship_item), RequirementResult):
-            for line in list(self.audit_tree.get_children(ship_item))[:1]:     # the reason line, not the offers
+            for line in self._reason_line(ship_item):
                 self.audit_tree.item(line, text=mark(self.audit_tree.item(line, "text")))
             return
         for child in self.audit_tree.get_children(ship_item):
@@ -566,33 +823,153 @@ class AuditTab:
                 for line in self.audit_tree.get_children(child):
                     self.audit_tree.item(line, text=mark(self.audit_tree.item(line, "text")))
 
-    def _update_shopping_list_ui(self):
+    # --- hub prices (ESI features plan 28.1) -------------------------------------------------------
+
+    def _priced(self):
+        """(hub name, its station and region) when prices are on, else None."""
+        if not esi_features.enabled("prices"):
+            return None
+        hub = esi_features.hub()
+        return hub, esi_features.HUBS[hub]
+
+    def _price_types(self):
+        """Every type on a Buy or Pull line."""
+        return ({i.type_id for i in self.buy_items if i.type_id is not None and not self.app.galaxy.is_capital(i.type_id)}
+                | {p.type_id for p in self.pull_lines})
+
+    def _quote(self, hub, type_id, quantity):
+        """Each line is priced on its own quantity against the hub's sell orders (D3.2): a Buy line
+        for what it buys, a Pull line for what its stock would cost. "pending" until the orders are in."""
+        if (hub, type_id) not in self._hub_orders:
+            return "pending"
+        orders = self._hub_orders[(hub, type_id)]
+        return None if orders is None else prices.walk(orders, type_id, quantity)
+
+    def _price_cell(self, priced, type_id, quantity, stock: bool = False):
+        """A Buy line's price; a Pull line's (stock=True) is what its units would cost, never "only N"."""
+        quote = self._quote(priced[0], type_id, quantity)
+        if quote == "pending":
+            return "…"
+        if stock and quote is not None and quote.listed:
+            return f"≈ {prices.isk(quote.cost)}"
+        return prices.line_text(quote)
+
+    def reprice(self):
+        """The hub changed: price the list again."""
+        self._update_shopping_list_ui()
+
+    def _start_pricing(self):
+        """Reads the hub's orders for types not read yet, on a worker thread; then the list is redrawn."""
+        priced = self._priced()
+        if priced is None:
+            return
+        hub, place = priced
+        stale = time.time() - prices.DEFAULT_TTL
+        missing = sorted(t for t in self._price_types() if self._hub_read.get((hub, t), 0) < stale)
+        if not missing:
+            return
+        self._price_job += 1
+        job = self._price_job
+        self.price_status = f"Pricing at {hub}…"
+
+        def work():
+            allowed, why = self.app._may_call_ccp()
+            if not allowed:
+                self.root.after(0, lambda: self._prices_done(job, hub, {}, f"No prices now: {why}"))
+                return
+            found = {}
+            try:
+                for n, type_id in enumerate(missing, 1):
+                    found[type_id] = self.app.price_book.orders(place["region_id"], place["station_id"], type_id)
+                    self.root.after(0, lambda n=n: self._price_progress(job, f"Pricing at {hub}: {n} of {len(missing)}…"))
+            except Exception as e:
+                self.root.after(0, lambda e=e: self._prices_done(job, hub, found, f"No prices: {e}"))
+                return
+            self.root.after(0, lambda: self._prices_done(job, hub, found, ""))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _price_progress(self, job, text):
+        if job == self._price_job:
+            self.price_status = text
+            self._show_totals()
+
+    def _prices_done(self, job, hub, found, status):
+        if job != self._price_job:
+            return
+        for type_id, orders in found.items():
+            self._hub_orders[(hub, type_id)] = orders
+            self._hub_read[(hub, type_id)] = time.time()
+        self.price_status = status
+        self._update_shopping_list_ui(price=False)
+
+    def _show_totals(self):
+        """The Fleet Totals text: units, then (prices on) what buying costs and what stock covers."""
+        units = sum(item.quantity for item in self.buy_items)
+        kinds = len(self.buy_items)
+        text = f"{kinds} item type{'s' if kinds != 1 else ''} · {units:,} unit{'s' if units != 1 else ''} to buy"
+        if self.pull_lines:
+            pulled = sum(p.quantity for p in self.pull_lines)
+            text = f"{pulled:,} unit{'s' if pulled != 1 else ''} to pull from stock\n" + text
+        priced = self._priced()
+        if priced is not None and self.shopping_items:
+            hub = priced[0]
+            buy = {i.type_id: i.quantity for i in self.buy_items
+                   if i.type_id is not None and not self.app.galaxy.is_capital(i.type_id)}
+            hulls = sum(1 for i in self.buy_items if i.type_id is not None and self.app.galaxy.is_capital(i.type_id))
+            stock = {}
+            for p in self.pull_lines:
+                stock[p.type_id] = stock.get(p.type_id, 0) + p.quantity
+            if self.price_status or any((hub, t) not in self._hub_orders for t in self._price_types()):
+                text += "\n" + (self.price_status or f"Pricing at {hub}…")
+            else:
+                if buy:
+                    text += "\n" + prices.totals({t: self._quote(hub, t, q) for t, q in buy.items()}, buy).text(hub)
+                if hulls:
+                    text += (f"\n{hulls} capital hull{'s' if hulls != 1 else ''} left out: from contracts "
+                             f"(right-click ▸ {FIND_A_HULL})")
+                if stock:
+                    covered = prices.totals({t: self._quote(hub, t, q) for t, q in stock.items()}, stock)
+                    text += (f"\nCovered by stock: none of it is sold at {hub}" if not covered.cost
+                             else f"\nCovered by stock ≈ {prices.isk(covered.cost)} ISK")
+        self.lbl_fleet_totals.config(text=text)
+
+    def _update_shopping_list_ui(self, price: bool = True):
         """Shows the shopping list, its totals, and enables Copy and Export when there's something on it."""
+        priced = self._priced()
+        if price:
+            self.price_status = ""
+        self.shopping_tree.configure(displaycolumns=("item", "qty", "price") if priced else ("item", "qty"))
         self.shopping_tree.delete(*self.shopping_tree.get_children())
         self._shopping_rows = {}
+        self._row_lines = {}
         # Plan 21: what's in stock nearby is pulled, under its own heading, before what's bought.
         if self.pull_lines:
             self.shopping_tree.insert("", tk.END, values=("Pull from stock", ""), tags=("heading",))
             for pull in self.pull_lines:
                 row = self.shopping_tree.insert("", tk.END, values=(f"{pull.place} · {pull.where}: {pull.item_name}",
                                                                     f"{pull.quantity:,}"))
+                if priced:
+                    self.shopping_tree.set(row, "price", self._price_cell(priced, pull.type_id, pull.quantity,
+                                                                          stock=True))
                 self._shopping_rows[row] = pull.for_type_id
+                self._row_lines[row] = pull
             if self.buy_items:
                 self.shopping_tree.insert("", tk.END, values=("Buy", ""), tags=("heading",))
         for item in self.buy_items:
             name = item.item_name + (f" (or {', '.join(item.alternatives)})" if item.alternatives else "")
             row = self.shopping_tree.insert("", tk.END, values=(name, f"{item.quantity:,}"))
+            if priced and item.type_id is not None:
+                capital = self.app.galaxy.is_capital(item.type_id)
+                self.shopping_tree.set(row, "price", "contracts" if capital else
+                                       self._price_cell(priced, item.type_id, item.quantity))
             self._shopping_rows[row] = item_key(item)
+            self._row_lines[row] = item
         self.shopping_tree.tag_configure("heading", font=(ui_style.FONT_FAMILY, 9, "bold"))
         if self.shopping_items:
             self.lbl_shopping_empty.place_forget()
-            units = sum(item.quantity for item in self.buy_items)
-            kinds = len(self.buy_items)
-            text = f"{kinds} item type{'s' if kinds != 1 else ''} · {units:,} unit{'s' if units != 1 else ''} to buy"
-            if self.pull_lines:
-                pulled = sum(p.quantity for p in self.pull_lines)
-                text = f"{pulled:,} unit{'s' if pulled != 1 else ''} to pull from stock\n" + text
-            self.lbl_fleet_totals.config(text=text)
+            if price:
+                self._start_pricing()
+            self._show_totals()
             self.fleet_totals_frame.pack(fill=tk.X, pady=10, padx=10)
             self.btn_copy_shopping_list.config(state=tk.NORMAL)
             self.btn_export_shopping_list.config(state=tk.NORMAL)
@@ -708,6 +1085,7 @@ class AuditTab:
             messagebox.showerror("Audit Error", f"An error occurred during the doctrine audit:\n{error}")
             self._update_audit_tree_ui()
             return
+        self._annotate_losses(results)
         self.last_audit_results = results
         self.last_packed_ships = packed
         self.last_carried_ships = carried
@@ -722,6 +1100,57 @@ class AuditTab:
         self._update_audit_tree_ui()
         self._log(f"[SUCCESS] Audit complete for {doctrine_name}. AuditResult count: {len(results)}")
 
+    def _annotate_losses(self, results):
+        """
+        Losses (plan 30.3): a missing ship a killmail matched reads "Lost <date>: replace" (or
+        "Possibly lost"). Once its requirement passes or soft-fails (a replacement is there or on
+        its way), the loss stops showing (D7.3).
+        """
+        if not esi_features.enabled("losses"):
+            return
+        from app.asset_handling.killmail_pull import insurance_payout
+        book = self.app.loss_book
+        for result in results:
+            for requirement in result.requirement_results:
+                missing = [s for s in requirement.ship_results if s.placement == "MISSING" and s.ship_item_id]
+                if not missing:
+                    continue
+                if requirement.status != RequirementStatus.FAIL or requirement.failure == "soft":
+                    book.clear(s.ship_item_id for s in missing)
+                    continue
+                for ship in missing:
+                    ship.loss = book.info(ship.ship_item_id)
+                    if ship.loss and esi_features.enabled("losses_insurance"):
+                        record = book.records.get(str(ship.loss["killmail_id"]), {})
+                        payout = insurance_payout(record.get("ship_type_id") or 0)
+                        if payout:
+                            ship.loss["insurance"] = prices.isk(payout)
+                lost = [s.loss for s in missing if s.loss and s.loss["state"] == "lost"]
+                if lost and len(lost) == len(missing):
+                    requirement.message = f"Lost {lost[0]['date']}: replace"
+
+    def _handle_this_one_lost(self, ship):
+        self.app.loss_book.settle(ship.loss["killmail_id"], ship.ship_item_id)
+        self._log(f"[INFO] {ship.custom_name or ship.ship_name} marked as the ship lost on {ship.loss['date']}.")
+        self._audit_again()
+
+    def _handle_not_this_one(self, ship):
+        self.app.loss_book.rule_out(ship.loss["killmail_id"], ship.ship_item_id)
+        self._log(f"[INFO] {ship.custom_name or ship.ship_name} wasn't the ship lost on {ship.loss['date']}.")
+        self._audit_again()
+
+    def _handle_copy_srp(self, killmail_id):
+        from app.asset_handling.killmail_pull import load_killmails
+        from app.services.losses import srp_text
+        killmail = load_killmails().get(int(killmail_id))
+        if killmail is None:
+            messagebox.showinfo(COPY_SRP, "The killmail isn't saved any more.")
+            return
+        text = srp_text(killmail, self.app.evedb_loader.get_type_name)
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self._log(f"[INFO] SRP items copied: {len(text.splitlines())} line(s).")
+
     def _add_empty_state_node(self, message: str):
         """Adds a single placeholder node to the tree to indicate an empty state."""
         self.audit_tree.insert('', 'end', text=message, values=("",))
@@ -731,6 +1160,8 @@ class AuditTab:
                                                    values=node.values)
         if node.data is not None:
             self._node_data[item] = node.data
+            if isinstance(node.data, ChoiceRef):
+                self._choice_rows[item] = (node.data.character_id, node.data.req_uid)
         if node.priority is not None:
             self._row_priority[item] = node.priority
         for child in node.children:
@@ -743,6 +1174,7 @@ class AuditTab:
 
     def _populate_audit_tree(self, doctrine_name: str, doctrine_data: dict):
         """Draws the audit tree: doctrine, packed ships, roles, characters, requirements, ships (design §10.1)."""
+        self._contract_book, self._choice_rows = None, {}       # contracts read again for each tree (28.3)
         # Root node: Doctrine
         root_id = self.audit_tree.insert('', 'end', text=doctrine_name, open=True)
 
@@ -810,6 +1242,9 @@ class AuditTab:
                 icon = character_icon(audit_result, packed.get(int(char_uid), []))
                 char_id = self.audit_tree.status_icons.insert(role_id, 'end', text=f"{icon} {char_name}",
                                                               values=(char_uid, role_uid))
+                note = skills_note(audit_result.requirement_results) if audit_result else None
+                if note is not None:
+                    self._insert_node(char_id, note)
 
                 # Add requirements as children of the character
                 req_count = 0
@@ -819,7 +1254,7 @@ class AuditTab:
                     if audit_result:
                         matching_req_result = next((r for r in audit_result.requirement_results
                                                     if r.req_uid == req.get('req_uid')), None)
-                    node = self._requirement_node(req, matching_req_result, carried)
+                    node = self._requirement_node(req, matching_req_result, carried, char_uid)
                     if node is not None:
                         self._insert_node(char_id, node)
 
@@ -827,7 +1262,7 @@ class AuditTab:
 
         self._log(f"[SUCCESS] Audit tree populated for {doctrine_name}")
 
-    def _requirement_node(self, req: dict, result, carried) -> "Node | None":
+    def _requirement_node(self, req: dict, result, carried, character_id=None) -> "Node | None":
         """One requirement's row and its ships, for either mode; None for a requirement with no fitting."""
         fit_uid = fitting_in_use(req)        # the pilot's replacement, if any (step 11.2)
         if fit_uid is None:
@@ -842,9 +1277,213 @@ class AuditTab:
         if fit_uid != req.get('fit_uid'):
             original = self.fitting_manager.get_fitting(req.get('fit_uid')) or {}
             replacing = original.get('hull') or original.get('fit_name') or f"fitting {req.get('fit_uid')}"
-        return requirement_node(req, hull, result, carried,
+        node = requirement_node(req, hull, result, carried,
                                 lambda ship: self._location_name(ship.location_id), notes, fit_name,
                                 place_label=self.app.evedb_loader.location_label, replacing=replacing)
+        if character_id is not None and fitting and not is_implant_set(fitting):
+            self._add_contract_nodes(node, req, result, int(character_id), fitting)
+        return node
+
+    # --- alliance contracts and the 2-hour pass (ESI features plan 28.3-28.5) -----------------------
+
+    def _book(self):
+        """The saved contracts, read once per tree drawn (None while Contracts is off)."""
+        if not esi_features.enabled("contracts"):
+            return None
+        if self._contract_book is None:
+            self._contract_book = ContractBook(self.app.auth_service.profiles, self.app.evedb_loader.system_of)
+        return self._contract_book
+
+    @staticmethod
+    def _whole_ship_missing(result) -> bool:
+        """D8.1: a hard requirement with no ship at all, or only ships gone missing (not away or misplaced)."""
+        if result is None or result.priority != "hard" or result.status != RequirementStatus.FAIL:
+            return False
+        if result.unassigned_hulls or result.misplaced:
+            return False
+        return all(s.placement == "MISSING" for s in result.ship_results)
+
+    def offer_text(self, offer: Offer) -> str:
+        """'Exact fit · 79.4 M · Jita IV - Moon 4 - Caldari Navy … · until 12 Oct' (and what's missing or extra)."""
+        name = self.app.evedb_loader.get_type_name
+        c = offer.contract
+        parts = [offer.label or ("Exact fit" if offer.kind == EXACT else "Near fit"), f"{prices.isk(c.price)} ISK",
+                 self.app.evedb_loader.location_label(c.location_id)]
+        if offer.light_years is not None:
+            parts.insert(2, f"{offer.light_years:.1f} ly" if offer.light_years >= 0.05 else "this system")
+        if c.expires:
+            parts.append(f"until {datetime.fromisoformat(c.expires.replace('Z', '+00:00')):%d %b}")
+        diff = []
+        if offer.missing:
+            diff.append("missing: " + ", ".join(name(t) + (f" ×{q}" if q > 1 else "") for t, q in offer.missing.items()))
+        if offer.extra:
+            diff.append("extra: " + ", ".join(name(t) + (f" ×{q}" if q > 1 else "") for t, q in offer.extra.items()))
+        if c.title:
+            parts.append(f"“{c.title}”")
+        return " · ".join(parts) + (f" ({'; '.join(diff)})" if diff else "")
+
+    def _add_contract_nodes(self, node, req, result, character_id, fitting):
+        """Under a hard requirement whose whole ship is missing: the chosen contract, or the alliance offers."""
+        book = self._book()
+        if book is None or result is None or result.priority != "hard":
+            return
+        from app.services.losses import is_super
+        if is_super(self.app.evedb_loader.get_type_group(fitting.get("hull_type_id") or 0)):
+            return          # a Titan or Super: no contracts (D8.10)
+        missing = self._whole_ship_missing(result)
+        # The ship turned up (D8.4): any ship that isn't missing, a hull with no fitting yet, or a pass.
+        found = (result.status != RequirementStatus.FAIL or result.misplaced or bool(result.unassigned_hulls)
+                 or any(s.placement != "MISSING" for s in result.ship_results))
+        choice, why = self.contract_choices.review(character_id, req["req_uid"], ship_found=found, book=book)
+        names = self.app.auth_service.index
+        if why == "gone":
+            self._log(f"[INFO] The contract chosen for {names.get(str(character_id), character_id)}'s "
+                      f"{fitting.get('hull')} is gone (accepted by someone else, or expired): buy instead.")
+            node.children.append(Node("⚠ The chosen contract is gone (accepted by someone else, or expired): "
+                                      "buy instead", tone="soft", data=CONTRACT_NOTE))
+        elif why == "ship found":
+            self._log(f"[INFO] {names.get(str(character_id), character_id)}'s {fitting.get('hull')} is in "
+                      "the assets: the contract choice is done.")
+        if choice is not None:
+            ref = ChoiceRef(character_id, req["req_uid"], choice)
+            node.children.append(Node(self.choice_text(choice), data=ref,
+                                         tone="soft" if choice.get("accepted_by") else None))
+            return
+        if not missing:
+            return
+        details = req if "system_id" in req or "location_id" in req else (result.requirement_details or {})
+        location = details.get("location_id")
+        system = details.get("system_id") or (self.app.evedb_loader.system_of(location) if location else None)
+        is_module = lambda t: self.app.evedb_loader.get_type_category(t) == 7      # noqa: E731
+        if self.app.galaxy.is_capital(fitting.get("hull_type_id")):
+            self._add_capital_offers(node, book, fitting, character_id, req["req_uid"], system, location, is_module)
+            return
+        offers = book.offers(fitting, system, location, is_module=is_module)
+        if not offers:
+            return
+        exact = [o for o in offers if o.kind == EXACT]
+        near = [o for o in offers if o.kind != EXACT]
+        parts = []
+        if exact:
+            parts.append(f"{len(exact)} exact fit{'s' if len(exact) != 1 else ''} from "
+                         f"{prices.isk(min(o.contract.price for o in exact))} ISK")
+        if near:
+            parts.append(f"{len(near)} near fit{'s' if len(near) != 1 else ''} from "
+                         f"{prices.isk(min(o.contract.price for o in near))} ISK")
+        at_station = sum(o.at_station for o in offers)
+        if at_station and location:
+            parts.append(f"{at_station} at {self.app.evedb_loader.location_label(location)}")
+        label = f"{fitting.get('hull')} for {names.get(str(character_id), character_id)}"
+        children = [Node(self.offer_text(o), data=OfferRef(o, character_id, req["req_uid"], label, offers, i))
+                    for i, o in enumerate(offers)]
+        node.children.append(Node("📜 On alliance contract (this system): " + " · ".join(parts), children))
+
+    def _add_capital_offers(self, node, book, fitting, character_id, req_uid, system, location, is_module):
+        """
+        A capital (D8.6, D8.11): alliance contracts within one jump, nearest first, the hull being
+        enough (its fit comes from the hub, C3); Find a Hull… searches further.
+        """
+        from app.services.capitals import label_for, rig_counts
+        galaxy = self.app.galaxy
+        hull = int(fitting["hull_type_id"])
+        names = self.app.auth_service.index
+        search_ref = HullSearchRef(hull, fitting, character_id, system)
+        if system is None or system not in galaxy.systems:
+            return
+        reach = galaxy.jump_range(hull)
+        nearby = galaxy.within(system, reach)
+        others = [f for f in self.fitting_manager.list_fittings()
+                  if f.get("hull_type_id") == hull and f.get("fit_uid") != fitting.get("fit_uid")]
+        rigs = rig_counts(fitting)
+        offers = []
+        for contract in book.alliance:
+            if contract.system_id not in nearby:
+                continue
+            labelled = label_for(contract, hull, fitting, others, is_module, rigs)
+            if labelled is None:
+                continue
+            label, kind, missing, extra = labelled
+            offers.append(Offer(contract, kind, missing, extra, location is not None and contract.location_id == location,
+                                label, nearby[contract.system_id]))
+        offers.sort(key=lambda o: (o.light_years, ("exact", "near", "hull").index(o.kind), o.contract.price))
+        where = f"within 1 jump, {reach:.1f} ly"
+        if not offers:
+            node.children.append(Node(f"📜 No alliance contract for the hull {where}: right-click ▸ {FIND_A_HULL}",
+                                         data=search_ref))
+            return
+        counts = {}
+        for o in offers:
+            counts.setdefault(o.label, []).append(o.contract.price)
+        parts = [f"{len(p)} × {k} from {prices.isk(min(p))} ISK" for k, p in counts.items()]
+        label = f"{fitting.get('hull')} for {names.get(str(character_id), character_id)}"
+        children = [Node(self.offer_text(o), data=OfferRef(o, character_id, req_uid, label, offers, i))
+                    for i, o in enumerate(offers)]
+        node.children.append(Node(f"📜 On alliance contract ({where}): " + " · ".join(parts), children,
+                                     data=search_ref))
+
+    def choice_text(self, choice: dict) -> str:
+        names = self.app.auth_service.index
+        if choice.get("accepted_by"):
+            who = names.get(str(choice["accepted_by"]), f"Character {choice['accepted_by']}")
+            return f"⚠ Contract accepted by {who}: waiting for the asset pull"
+        return (f"📜 Contract chosen: {left_text(self.contract_choices.left(choice))} left · "
+                f"{prices.isk(choice.get('price', 0))} ISK at "
+                f"{self.app.evedb_loader.location_label(choice.get('location_id'))}")
+
+    def _audit_again(self):
+        if self.audit_mode == "system":
+            self._handle_run_system_audit()
+        else:
+            self._handle_run_doctrine_audit()
+
+    def _handle_use_contract(self, ref):
+        """Use This Contract… (D8.3): a 2-hour pass; a replacement already on the list comes off it."""
+        if not messagebox.askyesno(USE_CONTRACT.rstrip("…"),
+                                   f"Use this contract for {ref.label}?\n\n{self.offer_text(ref.offer)}\n\n"
+                                   "For 2 hours this ship won't be bought: it comes off the shopping list, and "
+                                   "Add Missing Items asks first. Right-click ▸ Open in Game… to accept it."):
+            return
+        self.contract_choices.choose(ref.character_id, ref.req_uid, ref.offer, self.offer_text(ref.offer))
+        key = ("hull", str(ref.character_id), ref.req_uid)
+        if key in self._contributions:
+            del self._contributions[key]
+            self._share_places.pop(key, None)
+            self._added_ships.pop(key, None)
+            self._rebuild_shopping_items()
+            self._update_shopping_list_ui()
+        self._log(f"[INFO] Contract chosen for {ref.label}: {prices.isk(ref.offer.contract.price)} ISK. "
+                  "Not bought for the next 2 hours.")
+        self._audit_again()
+
+    def _handle_cancel_contract(self, ref):
+        self.contract_choices.cancel(ref.character_id, ref.req_uid)
+        self._log("[INFO] Contract choice cancelled: the ship is bought as usual.")
+        self._audit_again()
+
+    def _handle_open_contract(self, ref):
+        """Open in Game… (28.5): one contract window at a time, with Open Next through the rest."""
+        steps = [(self.offer_text(o), (lambda o=o: lambda client, char_id: client.open_contract(
+                  char_id, o.contract.contract_id))()) for o in ref.offers]
+        self.app.open_in_game("Open Contract", steps[ref.index][0], steps[ref.index][1], ref.character_id,
+                              steps=steps, start=ref.index)
+
+    def _handle_open_choice(self, ref):
+        cid = ref.choice["contract_id"]
+        self.app.open_in_game("Open Contract", ref.choice.get("label", f"Contract {cid}"),
+                              lambda client, char_id: client.open_contract(char_id, cid), ref.character_id)
+
+    def _tick_choices(self):
+        """Redraws the countdowns once a minute while any choice is on the tree."""
+        for item, (character_id, req_uid) in list(self._choice_rows.items()):
+            choice = self.contract_choices.get(character_id, req_uid)
+            if choice is None or not self.audit_tree.exists(item):
+                self._choice_rows.pop(item, None)
+                continue
+            self.audit_tree.item(item, text=self.choice_text(choice))
+        try:
+            self.root.after(60_000, self._tick_choices)
+        except (RuntimeError, tk.TclError):
+            pass
 
     # --- By System (homes and priorities plan, 24.1) ----------------------------------------------
 
@@ -999,6 +1638,7 @@ class AuditTab:
         requirement ▸ ships. The character row is each requirement's parent, as By Doctrine, so
         the right-click menus work the same.
         """
+        self._contract_book, self._choice_rows = None, {}       # contracts read again for each tree (28.3)
         system_id = data["system_id"]
         root_id = self.audit_tree.insert('', 'end', text=system_name, open=True)
         carried = {}
@@ -1033,8 +1673,11 @@ class AuditTab:
                 char_row = self.audit_tree.status_icons.insert(
                     station_id, 'end', text=f"{icon} {names.get(char_id, char_id)} · {role_name}",
                     values=(char_id, role_uid), open=True)
+                note = skills_note(shown.requirement_results)
+                if note is not None:
+                    self._insert_node(char_row, note)
                 for req, result in rows:
-                    node = self._requirement_node(req, result, carried)
+                    node = self._requirement_node(req, result, carried, char_id)
                     if node is not None:
                         self._insert_node(char_row, node)
         self._log(f"[SUCCESS] Audit tree populated for {system_name}")

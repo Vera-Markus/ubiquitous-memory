@@ -12,6 +12,7 @@ twins count, as they do in the audit. What stock doesn't cover is bought.
 """
 from collections import defaultdict
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 Needs = Dict[int, Tuple[str, int]]          # type ID -> (name, quantity), as in shopping_list_service
@@ -28,13 +29,17 @@ class PullLine:
     item_name: str
     quantity: int
     for_type_id: int                # the type the ship needs (a twin may be pulled for it)
+    location_id: Optional[int] = None   # the station, structure or system it's in (Set Destination, plan 27.2)
+    character_id: Optional[int] = None  # whose stock it is, when a character's (the pilot to send it to)
 
     def line(self) -> str:
         return f"{self.place} · {self.where}: {self.item_name} x{self.quantity}"
 
 
 def where_text(aboard: str) -> str:
-    """"hangar / in 'Ammo Can 1'" -> "hangar · 'Ammo Can 1'"."""
+    """"hangar / in 'Ammo Can 1'" -> "hangar · 'Ammo Can 1'"; "in contract 'X'" stays as it is."""
+    if (aboard or "").startswith("in contract"):
+        return aboard
     return " · ".join(part[3:] if part.startswith("in '") else part for part in (aboard or "hangar").split(" / "))
 
 
@@ -54,6 +59,21 @@ class StockIndex:
         for stacks in self._stock.values():
             stacks.sort(key=lambda e: (e[2].casefold(), where_text(e[0].aboard), e[0].item_id))
 
+    def add_contract(self, character_id: int, system_id: Optional[int], location_id: int, place: str,
+                     contract_id: int, title: str, items: Dict[int, int]) -> None:
+        """
+        A character's own live item exchange (ESI features plan 28.2): its items still count as
+        theirs, "in contract" at its station, after their hangars there. Pulling means taking the
+        contract back first.
+        """
+        if system_id is None:
+            return
+        where = "in contract" + (f" '{title}'" if title else "")
+        for type_id, quantity in items.items():
+            stack = SimpleNamespace(type_id=type_id, aboard=where, item_id=contract_id, root_location_id=location_id)
+            self._stock[("character", int(character_id), system_id, self._key(type_id))].append(
+                [stack, quantity, place])
+
     def allocate(self, holder: Optional[Dict[str, Any]], system_id: Optional[int],
                  needs: Needs) -> Tuple[List[PullLine], Needs]:
         """(what to pull, what's left to buy) for one ship's needs; pulled units are used up."""
@@ -72,7 +92,9 @@ class StockIndex:
                     left -= take
                     s = entry[0]
                     pulls.append(PullLine(entry[2], where_text(s.aboard), s.type_id,
-                                          name if s.type_id == type_id else self._type_name(s.type_id), take, type_id))
+                                          name if s.type_id == type_id else self._type_name(s.type_id), take, type_id,
+                                          s.root_location_id,
+                                          int(holder["id"]) if holder["kind"] == "character" else None))
             if left > 0:
                 buy[type_id] = (name, left)
         return pulls, buy
@@ -86,7 +108,8 @@ def merge_pulls(pulls: List[PullLine]) -> List[PullLine]:
         if k in merged:
             merged[k].quantity += p.quantity
         else:
-            merged[k] = PullLine(p.place, p.where, p.type_id, p.item_name, p.quantity, p.for_type_id)
+            merged[k] = PullLine(p.place, p.where, p.type_id, p.item_name, p.quantity, p.for_type_id,
+                                 p.location_id, p.character_id)
     return sorted(merged.values(), key=lambda p: (p.place.casefold(), p.where.casefold(), p.item_name.casefold()))
 
 

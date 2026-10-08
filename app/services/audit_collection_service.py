@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Set
+from app.asset_handling.skill_pull import load_levels
 from app import paths
 from app.models.asset_models import AuditSnapshot
 from app.loaders.doctrine_manager import DoctrineManager
@@ -30,6 +31,8 @@ class AuditCollectionService:
         self.sde_loader = sde_loader
         self.generated_dir = Path(generated_dir)
         self.clones_dir = clones_dir        # None: the app's data/clones, looked up when used
+        # Skills sit beside clones (plan 26.3): with a clones folder given, its sibling; else the app's.
+        self.skills_dir = Path(clones_dir).parent / "skills" if clones_dir else None
 
     async def collect_audit_snapshot(self, character_id: int) -> AuditSnapshot:
         """
@@ -89,6 +92,7 @@ class AuditCollectionService:
             assigned_role_uids=list(assigned_role_uids),
             carried_ships=carried_ships,
             clones=self._clones(character_id),
+            skills=load_levels(character_id, self.skills_dir or paths.SKILLS_DIR),
         )
 
     def _clones(self, character_id: int):

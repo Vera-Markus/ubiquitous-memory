@@ -34,6 +34,7 @@ class ShipRow:
     note: str = ""                      # why a designated ship wasn't audited
     home: Optional[Dict[str, Any]] = None       # {"system_id"} or {"anywhere": True}; None: no Home (H1)
     personal: bool = False                      # <Personal>: never audited (S5)
+    loss: Optional[Dict[str, Any]] = None       # a lost ship's row (ESI features plan 30.3): {state, date, killmail_id}
 
 
 def hangar_of(aboard: str) -> str:

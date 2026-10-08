@@ -8,6 +8,7 @@ from app.esi_service.oauth_config import CLIENT_ID, REDIRECT_URI
 from app.esi_service.esi_settings import ESI_BASE_URL
 from app.esi_service.real_esi_client import RealESIClient
 from app.services.export_resolved_locations import update_location_cache
+from app.services.pull_sequence import Hooks, SequenceResult
 
 class AssetPipelineService:
     """
@@ -20,13 +21,14 @@ class AssetPipelineService:
         self.ship_designations = ship_designations     # the app's ShipDesignations: last seen, 30-day expiry
         self._is_running = False
         self._start_lock = threading.Lock()     # the GUI button and the auto-pull timer can race
+        self.last_result: Optional[SequenceResult] = None      # who was pulled, dropped, stopped, held
 
     @property
     def is_running(self) -> bool:
         """Returns True if the pipeline is currently executing."""
         return self._is_running
 
-    def execute_full_pull(self, log_callback: Callable[[str], None]) -> Optional[bool]:
+    def execute_full_pull(self, log_callback: Callable[[str], None], hooks: Optional[Hooks] = None) -> Optional[bool]:
         """
         Executes the full asset pull and aggregation pipeline.
         
@@ -38,8 +40,10 @@ class AssetPipelineService:
             log_callback: A callback function to handle logging messages.
 
         Returns:
-            True if the entire pipeline completed successfully, False if it failed,
-            None (without running) if a pull is already running.
+            True if the pipeline completed (some characters may have been skipped:
+            see last_result), False if it failed, was stopped or is held, None
+            (without running) if a pull is already running. hooks drive the
+            safe-mode sequence (plan 25.4).
         """
         with self._start_lock:
             if self._is_running:
@@ -57,11 +61,12 @@ class AssetPipelineService:
             # However, if there is already a loop running, this might fail.
             # Given this is called from a Thread in main_window.py, it should be fine.
             
-            success = asyncio.run(run_multi_char_pull(log_callback, self.auth_service))
+            self.last_result = result = asyncio.run(run_multi_char_pull(log_callback, self.auth_service, hooks))
 
-            if not success:
+            if not result.any_succeeded:
                 log_callback("[ERROR] Multi-character asset pull failed.")
                 return False
+            # Characters that were pulled are saved: combine them even if the pull stopped part way.
 
             # 2. Run Asset Aggregation
             log_callback("[INFO] Running asset aggregation...")
@@ -76,6 +81,10 @@ class AssetPipelineService:
                     refresh_from_pull(self.ship_designations, paths.GENERATED_DIR, paths.CORP_DIR, log_callback)
                 except Exception as e:
                     log_callback(f"[WARNING] Couldn't update the ships' assigned fittings: {e}")
+
+            if result.held or result.stopped:
+                log_callback("[WARNING] The asset pull didn't finish; the characters pulled so far are saved.")
+                return False      # no more calls to CCP: it's down, or the user stopped
 
             # 3. Name every location the assets sit in (NPC stations from the SDE,
             # player structures through ESI) so the audit can match them. The

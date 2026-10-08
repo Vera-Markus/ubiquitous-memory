@@ -166,7 +166,7 @@ class RealESIClient(IESIClient):
 
             # Extract data
             data = None
-            if response.status_code in (200, 429, 400, 401, 403, 404, 420):
+            if response.status_code in (200, 201, 429, 400, 401, 403, 404, 420, 520):     # 201: a saved fit's ID
                 try:
                     data = response.json()
                 except Exception:

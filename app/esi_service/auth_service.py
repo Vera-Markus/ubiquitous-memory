@@ -262,14 +262,15 @@ class AuthService:
         self.active_character_id = char_id
         logger.info(f"Switched active character to: {self.index.get(char_id)}")
 
-    def get_access_token(self) -> Optional[str]:
+    def get_access_token(self, char_id: Optional[str] = None) -> Optional[str]:
         """
-        Returns the current access token for the active character.
+        Returns the access token of the active character, or of char_id when given.
         """
-        if not self.active_character_id:
+        char_id = char_id or self.active_character_id
+        if not char_id:
             return None
-        
-        profile = self.profiles.get(self.active_character_id)
+
+        profile = self.profiles.get(char_id)
         return profile.get("access_token") if profile else None
 
     def generate_pkce(self) -> Tuple[str, str]:
@@ -401,12 +402,14 @@ class AuthService:
                 lock = self._refresh_locks[loop] = asyncio.Lock()
             return lock
 
-    async def refresh_access_token(self) -> Dict[str, str]:
+    async def refresh_access_token(self, char_id: Optional[str] = None) -> Dict[str, str]:
         """
-        Uses the refresh token to obtain a new access token.
+        Uses the refresh token to obtain a new access token for the active character, or
+        for char_id when given (a call for one character while a pull switches between them).
         Uses an asyncio Lock to prevent concurrent refresh requests.
         """
-        if not self.active_character_id:
+        char_id = char_id or self.active_character_id
+        if not char_id:
             raise Exception("No active character selected.")
 
         async with self._refresh_lock():
@@ -414,7 +417,7 @@ class AuthService:
             # In a real scenario, we'd check if the current access_token is still 'old'
             # But for simplicity, we'll just proceed if we are the lock holder.
             
-            profile = self.profiles.get(self.active_character_id)
+            profile = self.profiles.get(char_id)
             if not profile:
                 # Removed (or never loaded) since the pull started: don't bring it back.
                 raise Exception("Active character profile not found.")
@@ -429,7 +432,7 @@ class AuthService:
                 "client_id": self.client_id,
             }
 
-            logger.info(f"Attempting to refresh access token for {self.active_character_id}...")
+            logger.info(f"Attempting to refresh access token for {char_id}...")
             async with httpx.AsyncClient() as client:
                 try:
                     response = await client.post(self.TOKEN_BASE_URL, data=data)

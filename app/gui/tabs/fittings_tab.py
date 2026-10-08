@@ -15,6 +15,7 @@ from app.services.fitting_display_formatter import FittingDisplayFormatter
 from app.services.fitting_tree_service import FittingTreeService, filter_groups, fitting_label
 from app.services.shopping_list_service import fitting_items, items_text
 from app.gui import style as ui_style
+from app.services import esi_features
 from app.gui.style import DANGER_BUTTON
 
 
@@ -127,6 +128,16 @@ class FittingsTab:
         )
         self.btn_delete_fitting.pack(side=tk.LEFT, padx=5)
 
+        # In-game fitting sync (ESI features plan 29.2, 29.5): shown while Options ▸ Fitting sync is on.
+        self.game_buttons = ttk.Frame(self.fitting_list_container)
+        self.btn_import_from_game = ttk.Button(self.game_buttons, text="Import from Game…",
+                                               command=self._handle_import_from_game)
+        self.btn_import_from_game.pack(side=tk.LEFT, padx=5)
+        self.btn_deleted_from_game = ttk.Button(self.game_buttons, text="Deleted from Game…",
+                                                command=self._handle_deleted_from_game)
+        self.btn_deleted_from_game.pack(side=tk.LEFT, padx=5)
+        self.show_game_buttons()
+
         self.fitting_menu = tk.Menu(self.fitting_tree, tearoff=0)
         self.fitting_menu.add_command(label="Rename…", command=self._handle_rename_fitting)
         self.fitting_menu.add_command(label="Delete…", command=self._handle_delete_fitting)
@@ -164,6 +175,24 @@ class FittingsTab:
         self._set_mode("view")
         # Initial load of the listbox
         self._refresh_fitting_list()
+
+    # --- In-game fitting sync (ESI features plan 29) --------------------------
+
+    def show_game_buttons(self):
+        """Import from Game… and Deleted from Game… while Fitting sync is on (Options)."""
+        if esi_features.enabled("fittings"):
+            self.game_buttons.pack(pady=(0, 5))
+        else:
+            self.game_buttons.pack_forget()
+
+    def _handle_import_from_game(self):
+        from app.gui.dialogs.game_fittings_dialogs import ImportFromGameDialog
+        if self.app._guard("Import from Game"):
+            self.game_dialog = ImportFromGameDialog(self.app)
+
+    def _handle_deleted_from_game(self):
+        from app.gui.dialogs.game_fittings_dialogs import DeletedFromGameDialog
+        self.game_dialog = DeletedFromGameDialog(self.app)
 
     # --- The fitting box: view, edit and new ---------------------------------
 
@@ -370,8 +399,9 @@ class FittingsTab:
     def _refresh_fitting_list(self, quiet=False):
         """
         Rebuilds the Class → Hull → Fitting tree, showing only what matches the search.
-        Classes and hulls keep their open/closed state; while searching they're all open,
-        and clearing the search puts them back as they were. quiet: no log lines (typing).
+        Classes and hulls start collapsed and keep their open/closed state; while searching
+        they're all open, and clearing the search puts them back as they were. A fitting
+        selected (after an import, say) opens its class and hull (Treeview.see). quiet: no log lines (typing).
         """
         if not quiet:
             self._log("[INFO] Refreshing fitting list...")
@@ -391,11 +421,11 @@ class FittingsTab:
             for class_name, hulls in groups:
                 class_row = f"class:{class_name}"
                 tree.insert("", tk.END, iid=class_row, text=class_name,
-                            open=bool(query) or self._open_rows.get(class_row, True))
+                            open=bool(query) or self._open_rows.get(class_row, False))     # collapsed at first
                 for hull, records in hulls:
                     hull_row = f"hull:{class_name}:{hull}"
                     tree.insert(class_row, tk.END, iid=hull_row, text=f"{hull} ({len(records)})",
-                                open=bool(query) or self._open_rows.get(hull_row, True))
+                                open=bool(query) or self._open_rows.get(hull_row, False))
                     for record in records:
                         tree.insert(hull_row, tk.END, iid=f"fit:{record['fit_uid']}", text=fitting_label(record))
 
@@ -493,6 +523,7 @@ class FittingsTab:
             # A replacement stays in the fitting's own UID namespace; the
             # "Shared Doctrine Fitting" box only applies to new imports.
             existing = self.fitting_manager.get_fitting(fit_uid)
+            old_version = int((existing or {}).get("version", 1))
             shared_doctrine = existing.get("source") == "doctrine" if existing else self.shared_doctrine_var.get()
             replacement_succeeded = self.fitting_manager.replace_fitting(
                 fit_uid, parsed, source="doctrine" if shared_doctrine else "local")
@@ -501,6 +532,10 @@ class FittingsTab:
                 self._log(f"[SUCCESS] Replaced fitting UID {fit_uid}.")
                 self.root.after(0, lambda: self._finish_saving(updated_fitting))
                 self.root.after(150, lambda: self._offer_metadata_editor(fit_uid, replaced=True))
+                if int(updated_fitting.get("version", 1)) > old_version:
+                    # 29.4: pilots with an older copy saved in game are offered the update.
+                    from app.gui.dialogs.game_fittings_dialogs import offer_update
+                    self.root.after(300, lambda: offer_update(self.app, updated_fitting))
             else:
                 self._log(f"[ERROR] Fitting UID {fit_uid} was not found.")
                 self.root.after(0, lambda: messagebox.showerror(

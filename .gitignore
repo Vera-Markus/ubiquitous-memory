@@ -6,3 +6,6 @@ dist/
 
 # Everything the app writes at run time: logins, assets, library, logs, database
 data/
+
+# The build date, written by tools/build_release.py for one build (Help ▸ About)
+app/build_info.py

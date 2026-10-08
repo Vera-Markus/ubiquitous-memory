@@ -56,6 +56,8 @@ class CharacterRemovalService:
         self.generated_dir = Path(generated_dir)
         self.clones_dir = Path(clones_dir or self.raw_dir.parent / "clones")
         self.corp_dir = Path(corp_dir or self.raw_dir.parent / "corp")
+        self.skills_dir = self.raw_dir.parent / "skills"            # skills per character (plan 26.3)
+        self.contracts_dir = self.raw_dir.parent / "contracts"      # contracts per character (plan 28.2)
 
     def _raw_file(self, char_id: str) -> Path:
         return self.raw_dir / f"{char_id}.json"
@@ -97,6 +99,12 @@ class CharacterRemovalService:
         clones = self.clones_dir / f"{char_id}.json"
         if clones.exists():
             clones.unlink()
+        skills = self.skills_dir / f"{char_id}.json"
+        if skills.exists():
+            skills.unlink()
+        contracts = self.contracts_dir / f"char_{char_id}.json"     # a corporation's stay: other members read them
+        if contracts.exists():
+            contracts.unlink()
         for corp in self.corp_dir.glob("*.json") if self.corp_dir.exists() else []:
             try:
                 pulled_by = str(json.loads(corp.read_text(encoding="utf-8")).get("pulled_by"))
