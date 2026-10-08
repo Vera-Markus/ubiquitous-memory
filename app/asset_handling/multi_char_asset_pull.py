@@ -8,6 +8,7 @@ from app.esi_service.esi_settings import ESI_BASE_URL
 from app.esi_service.oauth_config import CLIENT_ID, REDIRECT_URI
 from app.esi_service.real_esi_client import RealESIClient
 from app.asset_handling.enrich_assets import enrich_assets_with_custom_names
+from app.asset_handling.active_ship import add_active_ship
 from app.asset_handling.clone_pull import pull_clones_for_character, token_scopes
 from app.asset_handling.contract_pull import pull_contracts
 from app.asset_handling.killmail_pull import pull_corporation_killmails, pull_insurance, pull_killmails_for_character
@@ -205,6 +206,9 @@ async def _pull_all_characters(auth_service: Any, hooks: Hooks = None) -> Sequen
 
     # 3. Pull each character in turn: the safe-mode sequence decides what a failure does (plan 25.4).
     output_dir = str(RAW_DIR)
+    # The corporations' ships from the last pull: one being flown is theirs, not the pilot's.
+    corporation_items = {a.get("item_id") for corp in load_corporations() for a in corp.get("assets", [])
+                         if isinstance(a, dict)}
 
     async def pull_one(char_id: str) -> CharOutcome:
         logger.info(f"--- Processing Character: {char_id} ---")
@@ -219,6 +223,12 @@ async def _pull_all_characters(auth_service: Any, hooks: Hooks = None) -> Sequen
         try:
             outcome = await pull_assets_for_character(esi_client, char_id, output_dir, auth_service)
             if outcome:
+                # The ship the character is in: ESI's assets leave it out (a Titan that never docks).
+                try:
+                    await add_active_ship(esi_client, char_id, Path(output_dir) / f"{char_id}.json",
+                                          token_scopes(auth_service.get_access_token()), corporation_items)
+                except Exception as e:
+                    logger.warning(f"[{char_id}] The current ship wasn't added: {e}")
                 # Clones and implants: saved apart from the assets; a failure here doesn't fail the pull.
                 try:
                     await pull_clones_for_character(esi_client, char_id, auth_service.index.get(char_id, ""),

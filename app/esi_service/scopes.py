@@ -25,7 +25,9 @@ BUNDLE: Dict[str, str] = {
     "esi-skills.read_skills.v1": "Skill check: trained skills (plan 26)",
     "esi-skills.read_skillqueue.v1": "Skill check: skills finished since the last login (plan 26)",
     "esi-location.read_online.v1": "Open in the game client: is the character in game (plan 27)",
-    "esi-location.read_location.v1": "Capital contract search: where the chosen character is (plan 28.6)",
+    "esi-location.read_location.v1": "Where the character is: the capital contract search (plan 28.6), "
+                                     "and placing the ship they're in",
+    "esi-location.read_ship_type.v1": "The ship the character is in, which ESI's assets leave out",
     "esi-ui.open_window.v1": "Open in the game client: market, contracts (plan 27)",
     "esi-ui.write_waypoint.v1": "Open in the game client: destinations and waypoints (plan 27)",
     "esi-contracts.read_character_contracts.v1": "Contracts: your own, and ones you accepted (plan 28)",
@@ -41,6 +43,7 @@ FEATURES: Dict[str, Tuple[str, ...]] = {
     "client": ("esi-location.read_online.v1", "esi-ui.open_window.v1", "esi-ui.write_waypoint.v1"),
     "contracts": ("esi-contracts.read_character_contracts.v1", "esi-contracts.read_corporation_contracts.v1"),
     "capital_search": ("esi-location.read_location.v1",),
+    "active_ship": ("esi-location.read_location.v1", "esi-location.read_ship_type.v1"),
     "fittings": ("esi-fittings.read_fittings.v1", "esi-fittings.write_fittings.v1"),
     "losses": ("esi-killmails.read_killmails.v1",),
     "losses_corporation": ("esi-killmails.read_corporation_killmails.v1",),

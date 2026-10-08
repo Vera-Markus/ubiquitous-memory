@@ -85,7 +85,9 @@ def ship_rows(context: Any, holder: Dict[str, Any], designations: Any, fitting_m
         row = ShipRow(item_id=sighting.item_id, type_id=sighting.type_id, hull=sde.get_type_name(sighting.type_id),
                       custom_name=sighting.custom_name, location_id=sighting.root_location_id,
                       system_id=sighting.system_id,
-                      location=sde.location_label(sighting.root_location_id), aboard=sighting.aboard,
+                      location=sde.location_label(sighting.root_location_id)
+                      + (" (in space)" if sde.is_solar_system(sighting.root_location_id) else ""),
+                      aboard=sighting.aboard,
                       carrier_item_id=sighting.carrier_item_id)
         if designations is not None and designations.is_personal(sighting.item_id):
             row.personal = True

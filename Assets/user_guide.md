@@ -39,6 +39,7 @@ Every ship one holder has. Pick the holder at the top: one of your characters, o
 - **Owner** says whose requirements the ship serves ([owners](#owners)).
 - **Assigned only** hides ships with no fitting.
 - On the right, the selected ship's **Audit** and **EFT** tabs ([check one ship](#check-one-ship)).
+- **The ship a character is sitting in** is listed too, though EVE's asset list leaves it out: a Titan that never docks shows in its system, marked **(in space)**. A character added before this needs adding again (**Characters ▸ Add Character**) for it.
 
 The **Implants** tab, beside **Ships**, shows the chosen character's clones: the active clone and each jump clone with where it is, its implants by slot, and which of your library's implant sets it carries ([implant sets](#implant-sets)). It also gives the home station and the last clone jump.
 
@@ -68,7 +69,7 @@ A fitting for the **Capsule** with implants in it is an [implant set](#implant-s
 
 ### The Options tab
 
-**Connected Characters**, **Pull All**, **Auto Pull**, **Appearance** (the colour theme) and **ESI Features**. Under **Pull All**, a line says what a pull is doing: which character, a safe-mode countdown, characters skipped.
+**Connected Characters**, **Pull All**, **Auto Pull**, **Appearance** (the colour theme) and **ESI Features**. Right-click a character (or select it and press Delete) ▸ **Remove Character…**. Under **Pull All**, a line says what a pull is doing: which character, a safe-mode countdown, characters skipped.
 
 **ESI Features** turns features that use extra data from CCP on and off. A feature that's off makes no calls and shows nothing. So far:
 
@@ -333,7 +334,7 @@ A character who is a **Director** of their corporation can read its hangars. **P
 
 ### Owners
 
-Each assigned ship has an **owner**: a character or a corporation. It's whoever held the ship when it was first assigned; change it with **Owner** in [Ships](#the-ships-tab).
+Each assigned ship has an **owner**: a character or a corporation. It's whoever held the ship when it was first assigned; change it with **Owner** in [Ships](#the-ships-tab). The list offers every linked character's corporation, even one with no linked Director (its hangars aren't pulled, but a ship can still be its).
 
 - A ship serves only its owner's requirements. A corporation's ship sitting in your hangar doesn't count for you.
 - Your ship counts for you wherever it is; in a corporation hangar it's **Away**, unless that's where the requirement is.

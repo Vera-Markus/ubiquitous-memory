@@ -12,6 +12,16 @@ A Windows desktop tool for fleet organisers in EVE Online. Build a library of fi
 
 **Help → User Guide** (F1) explains the workflows and how the tabs connect.
 
+## What's new in 1.7.0-rc7
+
+**Log in again:** one more permission, `esi-location.read_ship_type.v1` (see [What it accesses](#what-it-accesses-and-where-your-data-goes)). After installing, use **Characters ▸ Add Character** for each character. Until you do, the ship that character is sitting in is left out, as before; everything else works. Install over RC6, and your library, ships and settings are kept.
+
+- **The ship you're sitting in:** EVE's asset list leaves out the ship a character is in (a Titan that never docks, a cyno alt logged off in space). Each pull now reads it and adds it where it is: a station, a structure, or in space ("(in space)" in the Ships tab).
+- **Orphaned items:** an item ESI lists inside a ship or container that isn't itself in the list (old rigs, say) is left out of the assets and logged, instead of showing up on its own.
+- **Unknown structures:** a ship missing from the assets is no longer taken for a structure and offered for naming.
+- **Options:** the character list can be selected in every theme; right-click ▸ **Remove Character…** (or Delete) removes one.
+- **Ships tab:** the **Owner** list offers every linked character's corporation, not only the ones a Director pulls.
+
 ## What's new in 1.6.0-rc6
 
 **Version numbers:** from this release the RC number is the minor version, so RC6 is **1.6.0**. RC1 to RC5 were all 1.0.0. **Help ▸ About** shows the version and when it was built.
@@ -121,7 +131,7 @@ Download from the [Releases](../../releases) page. Each release has:
 In PowerShell, in the folder you downloaded to:
 
 ```powershell
-Get-FileHash .\EveFleetManagementTool-1.6.0-setup.exe
+Get-FileHash .\EveFleetManagementTool-1.7.0-setup.exe
 ```
 
 The hash it prints must match the line for that file in `SHA256SUMS.txt` (the case of the letters doesn't matter).
@@ -142,7 +152,8 @@ When you add a character, you log in on CCP's own login page, in your browser. T
 | `esi-skills.read_skills.v1` | **Skill check:** read the character's trained skills, to say whether they can fly a doctrine fit. |
 | `esi-skills.read_skillqueue.v1` | **Skill check:** read the skill queue, to count skills that finished since the last pull. |
 | `esi-location.read_online.v1` | **Open in the game client:** check the character is logged in before sending anything to the game. |
-| `esi-location.read_location.v1` | **Find a Hull:** start the capital contract search from the system the character is in. |
+| `esi-location.read_location.v1` | **Find a Hull:** start the capital contract search from the system the character is in. Also where the ship they're in is (below). |
+| `esi-location.read_ship_type.v1` | The ship the character is sitting in. EVE's asset list leaves it out, so without this a Titan that never docks, or a cyno alt logged off in space, would never be seen. |
 | `esi-ui.open_window.v1` | **Open in the game client:** open a market window, a contract, a character's info, or a new mail (filled in, never sent) in the game. |
 | `esi-ui.write_waypoint.v1` | **Open in the game client:** set the autopilot destination or add waypoints. |
 | `esi-contracts.read_character_contracts.v1` | **Contracts:** read contracts the character can see, including ones assigned to their alliance, to offer replacement ships. |

@@ -47,11 +47,25 @@ def permission(roles: dict) -> int:
     return 1 if DIRECTOR in (roles.get("roles") or []) else 0
 
 
-async def corp_pullers(esi_client, auth: Any) -> Tuple[Dict[int, str], set, bool]:
+MEMBERSHIP_FILE = "character_corporations.json"
+
+
+def load_memberships(corp_dir: Optional[Path] = None) -> Dict[str, dict]:
+    """{character ID: {"corporation_id", "name"}}, as the last pull found them: every linked
+    character's corporation, Director or not (a ship's Owner can be any of them)."""
+    try:
+        data = json.loads((Path(corp_dir or CORP_DIR).parent / "generated" / MEMBERSHIP_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+async def corp_pullers(esi_client, auth: Any, members: Optional[Dict[str, int]] = None) -> Tuple[Dict[int, str], set, bool]:
     """
     ({corporation_id: character_id who pulls it}, every corporation seen, complete). complete is False when a
     character's corporation or roles couldn't be read, so callers don't take a missing
-    corporation as "nobody can pull it". The client's active character is restored.
+    corporation as "nobody can pull it". members, when given, gets {character ID: corporation ID}.
+    The client's active character is restored.
     """
     candidates: Dict[int, List[Tuple[int, int]]] = {}     # corp -> [(-permission, character_id)]
     complete = True
@@ -72,6 +86,8 @@ async def corp_pullers(esi_client, auth: Any) -> Tuple[Dict[int, str], set, bool
                                f"(HTTP {info.status_code}/{roles.status_code}); corp hangars may be incomplete.")
                 continue
             corp = int(info.data["corporation_id"])
+            if members is not None:
+                members[str(char_id)] = corp
             level = permission(roles.data or {})
             if level and set(PULL_SCOPES) <= token_scopes(auth.get_access_token()):
                 candidates.setdefault(corp, []).append((-level, int(char_id)))
@@ -178,11 +194,24 @@ async def pull_corporation(esi_client, corporation_id: int, puller: str, puller_
 async def pull_corporations(esi_client, auth: Any, corp_dir: Optional[Path] = None) -> Dict[int, bool]:
     """Pulls every corporation a linked Director can read. Returns {corporation_id: success}."""
     folder = Path(corp_dir or CORP_DIR)
-    pullers, seen, complete = await corp_pullers(esi_client, auth)
-    for corp in sorted(seen - set(pullers)):
+    members: Dict[str, int] = {}
+    pullers, seen, complete = await corp_pullers(esi_client, auth, members)
+    corp_names: Dict[int, str] = {}
+    for corp in sorted(seen):
         info = await esi_client.request(ESIRequest(url=f"/corporations/{corp}/"))
-        name = (info.data or {}).get("name") if info.status_code == 200 else f"Corporation {corp}"
-        logger.info(f"{name}: no linked Director, so its corp hangars aren't pulled.")
+        corp_names[corp] = ((info.data or {}).get("name") if info.status_code == 200 else None) or f"Corporation {corp}"
+        if corp not in pullers:
+            logger.info(f"{corp_names[corp]}: no linked Director, so its corp hangars aren't pulled.")
+    # Every linked character's corporation, for the Ships tab's Owner list (a character's ship can be
+    # given to their corporation without a Director pulling its hangars). Kept as it was when the
+    # pull couldn't read everyone.
+    if members:
+        path = folder.parent / "generated" / MEMBERSHIP_FILE
+        saved = load_memberships(folder) if not complete else {}
+        saved.update({cid: {"corporation_id": corp, "name": corp_names.get(corp, f"Corporation {corp}")}
+                      for cid, corp in members.items()})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(saved, indent=1), encoding="utf-8")
     results: Dict[int, bool] = {}
     original = auth.active_character_id
     try:

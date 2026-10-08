@@ -31,6 +31,23 @@ INTERNAL_FLAGS = {
     "Inventory", "ShipSlot", "Hold"
 }
 
+# Fitted slots: only a ship has these. ESI leaves the ship a character is sitting in (a pod too) out of
+# the assets but lists what's fitted to it, and now and then lists an old ship's rigs without the ship.
+# Those items point at the ship's ID, which looks like a structure's and isn't one
+# (/universe/structures answers 403).
+SHIP_SLOT_PREFIXES = ("HiSlot", "MedSlot", "LoSlot", "RigSlot", "SubSystemSlot")
+# A structure's own: corporation assets list a structure's fitted modules in it too.
+STRUCTURE_FLAGS_PREFIXES = ("Hangar", "CorpSAG", "Deliveries", "CorpDeliveries", "AssetSafety", "OfficeFolder",
+                            "Impounded", "ServiceSlot", "StructureFuel", "QuantumCoreRoom", "StructureDeedBay")
+
+
+def is_ship_contents(flags) -> bool:
+    """Something's fitted in it (and nothing marks it a structure): a ship, never looked up."""
+    flags = set(flags or ())
+    return any(f.startswith(SHIP_SLOT_PREFIXES) for f in flags) and \
+        not any(f.startswith(STRUCTURE_FLAGS_PREFIXES) for f in flags)
+
+
 UNKNOWN_ENTRY = {
     "name": "Unknown",
     "owner_id": 0,
@@ -168,7 +185,7 @@ def build_location_cache(
     item_ids, known_ids, unknown_ids = [], [], []
     for loc_id, flags in asset_location_map.items():
         is_junk = flags and all(f in INTERNAL_FLAGS for f in flags)
-        if is_junk or loc_id in all_item_ids:
+        if is_junk or loc_id in all_item_ids or is_ship_contents(flags):
             item_ids.append(loc_id)          # a ship, container or internal sub-location
         elif str(loc_id) in db_locations:
             known_ids.append(loc_id)
@@ -185,6 +202,10 @@ def build_location_cache(
 
     for loc_id in known_ids:
         cache[str(loc_id)] = db_locations[str(loc_id)]
+    for loc_id in item_ids:         # a ship taken for a structure before: not looked up again
+        entry = cache.get(str(loc_id))
+        if entry is not None and entry.get("name") == "Unknown" and not entry.get("manual"):
+            del cache[str(loc_id)]
     for loc_id in unknown_ids:
         key = str(loc_id)
         if key not in cache:        # an existing entry keeps its name and its manual / prompt_skipped marks

@@ -497,12 +497,18 @@ class EVEFleetGUI:
         list_container = ttk.Frame(char_frame)
         list_container.pack(fill=tk.BOTH, expand=True)
 
-        self.character_listbox = tk.Listbox(list_container)
-        self.character_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # A themed list like the other tabs' (its selection shows in every theme): click a character
+        # to select it; right-click ▸ Remove Character… or the Delete key removes it.
+        self.character_list = ttk.Treeview(list_container, show="tree", selectmode="browse")
+        self.character_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.character_listbox.yview)
+        scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.character_list.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.character_listbox.config(yscrollcommand=scrollbar.set)
+        self.character_list.config(yscrollcommand=scrollbar.set)
+        self.character_menu = tk.Menu(self.character_list, tearoff=0)
+        self.character_menu.add_command(label="Remove Character…", command=self._handle_remove_character)
+        self.character_list.bind("<Button-3>", self._on_character_right_click)
+        self.character_list.bind("<Delete>", lambda e: self._handle_remove_character())
 
         # --- Right Side: pull status and controls ---
         # Two columns, each as wide as its panels: pulling on the left (Pull All, Asset Status,
@@ -656,12 +662,18 @@ class EVEFleetGUI:
         if not characters:
             messagebox.showinfo("Remove Character", "There are no connected characters.")
             return
-        preselect = None
-        selection = self.character_listbox.curselection()
-        if selection:
-            preselect = self.character_listbox.get(selection[0]).rsplit("(", 1)[-1].rstrip(")")
+        selection = self.character_list.selection()
+        preselect = selection[0] if selection else None       # each row's ID is its character ID
         self.remove_character_dialog = RemoveCharacterDialog(
             self, self.character_removal_service, characters, self._remove_character, preselect)
+
+    def _on_character_right_click(self, event):
+        row = self.character_list.identify_row(event.y)
+        if not row:
+            return
+        self.character_list.selection_set(row)
+        self.character_list.focus(row)
+        self.character_menu.post(event.x_root, event.y_root)
 
     def _remove_character(self, char_id: str):
         try:
@@ -1367,9 +1379,9 @@ class EVEFleetGUI:
 
     def _redraw_character_listbox(self):
         """The Options tab's characters, alphabetical (UI thoughts 11, plan 17.2)."""
-        self.character_listbox.delete(0, tk.END)
+        self.character_list.delete(*self.character_list.get_children())
         for name, char_id in sorted(self.library_char_id_map.items(), key=lambda c: c[0].casefold()):
-            self.character_listbox.insert(tk.END, f"{name} ({char_id})")
+            self.character_list.insert("", tk.END, iid=str(char_id), text=name)
 
     def _populate_audit_doctrine_combo(self):
         """Cross-tab refresh: doctrine changes update the Audit tab selector."""

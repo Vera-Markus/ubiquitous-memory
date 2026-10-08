@@ -15,7 +15,7 @@ from tkinter import ttk
 from app.gui import themed_dialogs as messagebox
 
 from app import paths
-from app.asset_handling.corp_pull import load_corporations
+from app.asset_handling.corp_pull import load_corporations, load_memberships
 from app.gui import style as ui_style
 from app.gui import eft_presenter as eft
 from app.gui.audit_presenter import ICONS, Node, ship_node
@@ -100,6 +100,7 @@ class CorpTab:
         self.app = app
         self.frame = frame
         self._holders = {}              # label -> holder
+        self._owners = {}               # label -> a possible Owner: the holders, and every character's corporation
         self._rows = {}                 # tree item -> ShipRow
         self._fit_choices = {}          # Fitting dropdown label -> fit_uid (PERSONAL -> None)
         self._systems = {}              # solar system name -> ID, for the Home box
@@ -363,6 +364,15 @@ class CorpTab:
         if not self._systems:
             self._load_systems()
         self._holders = {h["label"]: h for h in holders(names, corporations)}
+        self._owners = dict(self._holders)
+        # A character's corporation is an Owner choice even with no Director to pull its hangars.
+        pulled = {h["id"] for h in self._holders.values() if h["kind"] == "corporation"}
+        for cid, corp in sorted(load_memberships(paths.CORP_DIR).items(), key=lambda m: (m[1].get("name") or "").casefold()):
+            if cid in names and int(corp["corporation_id"]) not in pulled:
+                pulled.add(int(corp["corporation_id"]))
+                label = f"{corp['name']} (corporation)"
+                self._owners[label] = {"kind": "corporation", "id": int(corp["corporation_id"]),
+                                       "name": corp["name"], "label": label}
         labels = list(self._holders)
         current = self.holder_combo.get()
         self.holder_combo["values"] = labels
@@ -376,7 +386,7 @@ class CorpTab:
         holder = self._holders.get(self.holder_combo.get())
         rows = []
         if holder is not None and self._context is not None:
-            names = {(h["kind"], h["id"]): h["name"] for h in self._holders.values()}
+            names = {(h["kind"], h["id"]): h["name"] for h in self._owners.values()}
             rows = ship_rows(self._context, holder, self.app.ship_designations, self.app.fitting_manager,
                              self.app.audit_engine, names)
         rows += self._lost_rows(holder)
@@ -485,9 +495,9 @@ class CorpTab:
         self.home_combo.config(state="normal" if fitted else "disabled")
         self.home_combo.set(homes.pop() if len(homes) == 1 and "—" not in homes else "")
         assigned = [r for r in rows if r.fit_uid is not None or r.personal]
-        self.owner_combo["values"] = list(self._holders)
+        self.owner_combo["values"] = list(self._owners)
         owners = {(r.owner["kind"], r.owner["id"]) for r in assigned}
-        common = next((label for label, h in self._holders.items() if owners == {(h["kind"], h["id"])}), "")
+        common = next((label for label, h in self._owners.items() if owners == {(h["kind"], h["id"])}), "")
         self.owner_combo.set(common)
         self.owner_combo.config(state="readonly" if assigned else "disabled")
         if len(rows) == 1:
@@ -744,7 +754,7 @@ class CorpTab:
 
     def _handle_owner(self):
         """The Owner dropdown changed: the selected assigned ships belong to that holder now."""
-        owner = self._holders.get(self.owner_combo.get())
+        owner = self._owners.get(self.owner_combo.get())
         rows = [r for r in self._selected_rows() if r.fit_uid is not None or r.personal]
         if owner is None or not rows:
             return
