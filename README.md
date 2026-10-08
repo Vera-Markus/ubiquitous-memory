@@ -12,6 +12,12 @@ A Windows desktop tool for fleet organisers in EVE Online. Build a library of fi
 
 **Help → User Guide** (F1) explains the workflows and how the tabs connect.
 
+## What's new in 1.7.1-rc7.1
+
+- **Fix:** an open **Tools** or **Characters** menu no longer blinks once a second (since RC6).
+
+No new permissions: install over RC7, no need to log in again.
+
 ## What's new in 1.7.0-rc7
 
 **Log in again:** one more permission, `esi-location.read_ship_type.v1` (see [What it accesses](#what-it-accesses-and-where-your-data-goes)). After installing, use **Characters ▸ Add Character** for each character. Until you do, the ship that character is sitting in is left out, as before; everything else works. Install over RC6, and your library, ships and settings are kept.
@@ -131,7 +137,7 @@ Download from the [Releases](../../releases) page. Each release has:
 In PowerShell, in the folder you downloaded to:
 
 ```powershell
-Get-FileHash .\EveFleetManagementTool-1.7.0-setup.exe
+Get-FileHash .\EveFleetManagementTool-1.7.1-setup.exe
 ```
 
 The hash it prints must match the line for that file in `SHA256SUMS.txt` (the case of the letters doesn't matter).

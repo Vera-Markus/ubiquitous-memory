@@ -645,9 +645,15 @@ class EVEFleetGUI:
     def _update_ccp_controls(self):
         """Menu entries that call CCP are off while a login runs, or while Tranquility is down (D11.9)."""
         locked = self.server_status.locked()
-        self.characters_menu.entryconfig("Add Character",
-                                         state=tk.DISABLED if locked or self._login_running else tk.NORMAL)
-        self.tools_menu.entryconfig("Check for DB Update", state=tk.DISABLED if locked else tk.NORMAL)
+        self._set_menu_entry_state(self.characters_menu, "Add Character",
+                                   tk.DISABLED if locked or self._login_running else tk.NORMAL)
+        self._set_menu_entry_state(self.tools_menu, "Check for DB Update", tk.DISABLED if locked else tk.NORMAL)
+
+    @staticmethod
+    def _set_menu_entry_state(menu: tk.Menu, label: str, state: str):
+        """Only when it changes: this runs every second, and on Windows any entryconfig redraws an open menu (it blinked)."""
+        if str(menu.entrycget(label, "state")) != state:
+            menu.entryconfig(label, state=state)
 
     def _handle_remove_character(self):
         """Characters ▸ Remove Character: choose a character, review what goes, remove."""
