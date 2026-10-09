@@ -12,6 +12,27 @@ A Windows desktop tool for fleet organisers in EVE Online. Build a library of fi
 
 **Help → User Guide** (F1) explains the workflows and how the tabs connect.
 
+## What's new in 1.7.2-rc7.2
+
+- **Updates from inside the app:** **Help ▸ Check for Updates…** looks for a newer release here on GitHub. With the installed version, **Update** downloads the new installer, checks it against the release's SHA256SUMS, installs it and reopens the app; your characters, library and settings are kept. The portable zip and running from source get a link to the release page instead.
+  - **Once a day at startup** the app checks quietly and only speaks up when there's something new. Switch it off in **Options ▸ Updates**.
+  - This release is the first with the updater, so install it by hand; later ones can come through **Help ▸ Check for Updates…**.
+- **Ships tab:**
+  - **Onboard These Ships…:** select several ships of one hull, right-click, and give them a fitting, an owner and a Home in one go. No doctrine needed.
+  - **A Name column:** the hull stays in **Ship**, the name you gave it in game moves to **Name** beside it.
+  - **Column widths are remembered,** for every character, and the last column takes the spare room.
+  - **EFT for a ship with no fitting:** **Current** shows it as it's fitted now, in green.
+- **Restart now:** after a database update (**Tools ▸ Check for DB Update**) or a **Full Reset**, the app offers to restart itself instead of leaving it to you. The database check also links to EVE's patch notes.
+- **Fittings tab:**
+  - **The list** is fixed at a fifth of the window.
+  - **Loadout,** the new first view, lays the fitting out: every slot (empty ones faded), the drone or fighter bay, and the cargo.
+  - **The doctrine requirements** (fuel, fleet hangar stock, carried ships, fighter tubes, escape ship) are edited right there, so the **Edit Doctrine Requirements** window is gone. Fighter tubes sit beside each fighter type.
+  - **EFT text** is the second tab; **Edit** and **New Fitting** use it.
+  - **Unsaved requirement changes** are asked about before you move on.
+- **Fenris Creations:** EVE's developer, formerly CCP Games, renamed itself in May 2026; the app, the guide and this page use the new name.
+- **Options:** the character panel's title counts them: **Connected Characters (5)**.
+- **Onboard Ships Here: a corporation as owner.** Tick **Owner: a corporation** and pick one: every ship onboarded in that window belongs to the corporation, and any saved fitting of its hull can be chosen, doctrine or not.
+
 ## What's new in 1.7.1-rc7.1
 
 - **Fix:** an open **Tools** or **Characters** menu no longer blinks once a second (since RC6).
@@ -35,7 +56,7 @@ No new permissions: install over RC7, no need to log in again.
 **Log in again:** this release asks for more permissions (see [What it accesses](#what-it-accesses-and-where-your-data-goes)). After installing, use **Characters ▸ Add Character** for each character. Until you do, the new features skip that character and say "log in again"; everything else works as before. There's no database rebuild: install over RC5, and your library, ships and settings are kept.
 
 **Tranquility's status:**
-- **A lamp** on the right of the tab row shows whether Tranquility is up. A red dot on it means CCP has posted an incident or maintenance; hover to read it.
+- **A lamp** on the right of the tab row shows whether Tranquility is up. A red dot on it means Fenris Creations has posted an incident or maintenance; hover to read it.
 - **While the server's down** (including daily downtime), pulls and logins wait. Auto Pull tries again quietly every 5 minutes.
 - **A pull that keeps failing** goes into a short safe mode instead of hammering ESI. A character that still fails is skipped, and the rest are pulled.
 
@@ -101,7 +122,7 @@ Coming from RC2? Read the RC3 notes below too.
 
 **Add your characters again.** RC3 asks for new permissions (clones and implants, and corporation hangars for Directors): use **Characters → Add Character** once for each character. Your library and settings are kept.
 
-**The app rebuilds its game database once** (about 100 MB from CCP) at the first start after upgrading, because fuel limits need item volumes it didn't store before. Accept when asked.
+**The app rebuilds its game database once** (about 100 MB from Fenris Creations) at the first start after upgrading, because fuel limits need item volumes it didn't store before. Accept when asked.
 
 New since RC2:
 
@@ -128,7 +149,7 @@ Download from the [Releases](../../releases) page. Each release has:
 
 **Windows SmartScreen will warn you** ("Windows protected your PC"), because the program isn't code-signed. Code-signing certificates are expensive for a free fan project. Click **More info → Run anyway**. If you'd rather check first, compare the checksum (below), or read the source in this repo. Every release is built from it by the [Release workflow](.github/workflows/release.yml), and you can see the build log on the Actions tab.
 
-**On first run** the app downloads CCP's static game data (about 100 MB) and builds its item database from it. This takes a minute or two. **Tools → Check for DB Update** fetches a newer one after an EVE patch.
+**On first run** the app downloads Fenris Creations' static game data (about 100 MB) and builds its item database from it. This takes a minute or two. **Tools → Check for DB Update** fetches a newer one after an EVE patch.
 
 **Upgrading:** run the new installer over the old one. Your characters, library and settings are kept. With the portable zip, copy your old `data` folder into the new one.
 
@@ -137,14 +158,14 @@ Download from the [Releases](../../releases) page. Each release has:
 In PowerShell, in the folder you downloaded to:
 
 ```powershell
-Get-FileHash .\EveFleetManagementTool-1.7.1-setup.exe
+Get-FileHash .\EveFleetManagementTool-1.7.2-setup.exe
 ```
 
 The hash it prints must match the line for that file in `SHA256SUMS.txt` (the case of the letters doesn't matter).
 
 ## What it accesses, and where your data goes
 
-When you add a character, you log in on CCP's own login page, in your browser. The app never sees your password. It asks for these permissions (ESI scopes):
+When you add a character, you log in on Fenris Creations' own login page, in your browser. The app never sees your password. It asks for these permissions (ESI scopes):
 
 | Scope | Why |
 |---|---|
@@ -173,14 +194,14 @@ Each feature can be turned off in **Options ▸ ESI Features**; a feature that's
 
 **What it can change in game:** only what you ask for, after you confirm. It can save and delete in-game fittings, set destinations and waypoints, and open windows in the client. It can't move items, accept or create contracts, send mail, or see your wallet. Corporation hangars and corporation killmails are only read for a character who is a Director.
 
-**Everything stays on your PC.** The app talks only to CCP: the login server, ESI, CCP's static data download, and CCP's status page (`status.eveonline.com`, run for CCP by Atlassian Statuspage), which it reads to know when Tranquility is down. There's no server of ours, no analytics and no telemetry. Everything it stores is in the `data` folder next to the program (for the installer: `%LOCALAPPDATA%\Programs\EVE Fleet Management Tool\data`):
+**Everything stays on your PC.** The app talks to Fenris Creations: the login server, ESI, Fenris Creations' static data download, and Fenris Creations' status page (`status.eveonline.com`, run for Fenris Creations by Atlassian Statuspage), which it reads to know when Tranquility is down. The only other place is GitHub, for this repo's release list when it checks for a new version (once a day at startup unless you turn it off in **Options ▸ Updates**, or **Help ▸ Check for Updates…**); nothing about you is sent. There's no server of ours, no analytics and no telemetry. Everything it stores is in the `data` folder next to the program (for the installer: `%LOCALAPPDATA%\Programs\EVE Fleet Management Tool\data`):
 
 | Folder | Holds |
 |---|---|
 | `data\auth` | Login tokens, one file per character. **They are stored unencrypted**, so don't share this folder. Anyone with a copy of these files can read that character's assets until you revoke the app's access at [community.eveonline.com](https://community.eveonline.com/support/third-party-applications/). **Characters → Remove Character…** deletes the tokens from this PC. |
 | `data\raw`, `data\generated` | Pulled assets, your fittings, roles and doctrines. |
 | `data\logs` | Logs of the last three sessions. They don't contain login tokens. |
-| `data\eve.db` | CCP's static game data. |
+| `data\eve.db` | Fenris Creations' static game data. |
 
 The login briefly runs a small web server on your PC at `http://localhost:8080/` to receive the login result from your browser. If another program already uses port 8080, adding a character will fail; close that program and try again.
 
@@ -207,4 +228,4 @@ python -m venv .venv
 
 The source is under the [MIT licence](LICENSE).
 
-EVE Online and all related names, images and data are trademarks or property of CCP hf. This is an unofficial fan project, not affiliated with or endorsed by CCP hf. Game data comes from CCP's Static Data Export and the EVE Swagger Interface (ESI).
+EVE Online and all related names, images and data are trademarks or property of Fenris Creations. This is an unofficial fan project, not affiliated with or endorsed by Fenris Creations. Game data comes from Fenris Creations' Static Data Export and the EVE Swagger Interface (ESI).

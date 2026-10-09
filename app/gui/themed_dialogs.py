@@ -11,6 +11,9 @@ so a module imports this as either:
 Each opens centred on the app, waits for an answer and returns it like the originals:
 Return presses the highlighted button, Escape or the close box cancels, Ctrl+C copies
 the message. With no Tk window yet, the Windows boxes are used.
+
+link=(text, url) adds a clickable line under the message that opens the page in the
+browser (1.7.2 plan, 33.4: the patch notes); the Windows boxes get the address instead.
 """
 import tkinter as tk
 import tkinter.messagebox as _native
@@ -40,7 +43,7 @@ class _Dialog:
 
     def __init__(self, owner: tk.Misc, title: str, message: str, icon: str,
                  buttons: Sequence[Tuple[str, Any]], default: Any, cancel: Any,
-                 entry_text: Optional[str] = None):
+                 entry_text: Optional[str] = None, link: Optional[Tuple[str, str]] = None):
         self.value = cancel
         self.cancel = cancel
         self.message = message
@@ -55,6 +58,14 @@ class _Dialog:
         ttk.Label(body, text=symbol, foreground=getattr(ui_style, colour), width=2, anchor=tk.CENTER,
                   font=(ui_style.FONT_FAMILY, 20, "bold")).grid(row=0, column=0, rowspan=2, sticky=tk.N, padx=(0, 12))
         ttk.Label(body, text=message, wraplength=WRAP, justify=tk.LEFT).grid(row=0, column=1, sticky=tk.W)
+        self.link = None
+        if link is not None:
+            text, url = link
+            self.link = ttk.Label(body, text=text, foreground=ui_style.INFO, cursor="hand2",
+                                  font=(ui_style.FONT_FAMILY, 9, "underline"))
+            self.link.grid(row=1, column=1, sticky=tk.W, pady=(8, 0))
+            self.link.bind("<Button-1>", lambda e: _open(url))
+            self.message = f"{message}\n\n{text}: {url}"
         self.entry = None
         if entry_text is not None:
             self.entry = ttk.Entry(body, width=44)
@@ -100,12 +111,20 @@ class _Dialog:
         return self.value
 
 
-def _ask(title, message, icon, buttons: List[Tuple[str, Any]], default, cancel, native, parent=None, **kw):
+def _open(url: str) -> None:
+    import webbrowser
+    webbrowser.open(url)
+
+
+def _ask(title, message, icon, buttons: List[Tuple[str, Any]], default, cancel, native, parent=None,
+         link: Optional[Tuple[str, str]] = None, **kw):
     owner = _owner(parent)
     if owner is None:
+        if link is not None:
+            message = f"{message or ''}\n\n{link[0]}: {link[1]}"
         return native(title, message, **({"parent": parent} if parent is not None else {}), **kw)
     # Silent: no system sound as a box opens.
-    return _Dialog(owner, title or "", message or "", icon, buttons, default, cancel).run()
+    return _Dialog(owner, title or "", message or "", icon, buttons, default, cancel, link=link).run()
 
 
 def showinfo(title=None, message=None, **options) -> str:

@@ -65,6 +65,23 @@ def holders(character_names: Dict[str, str], corporations: Iterable[dict]) -> Li
     return found
 
 
+def owner_choices(character_names: Dict[str, str], corporations: Iterable[dict],
+                  memberships: Dict[str, dict]) -> List[Dict[str, Any]]:
+    """
+    What a ship's owner can be: the holders, then each linked character's corporation that
+    no Director pulls (memberships: {character ID: {corporation_id, name}}), by name.
+    """
+    found = holders(character_names, corporations)
+    pulled = {h["id"] for h in found if h["kind"] == "corporation"}
+    for cid, corp in sorted(memberships.items(), key=lambda m: (m[1].get("name") or "").casefold()):
+        if str(cid) in character_names and int(corp["corporation_id"]) not in pulled:
+            pulled.add(int(corp["corporation_id"]))
+            name = corp.get("name") or f"Corporation {corp['corporation_id']}"
+            found.append({"kind": "corporation", "id": int(corp["corporation_id"]), "name": name,
+                          "label": f"{name} (corporation)"})
+    return found
+
+
 def holder_name(holder: Optional[Dict[str, Any]], names: Dict[tuple, str]) -> str:
     if not holder:
         return ""

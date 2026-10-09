@@ -1,5 +1,5 @@
 """
-Builds data/eve.db from CCP's official SDE (the JSON Lines zip from
+Builds data/eve.db from Fenris Creations' official SDE (the JSON Lines zip from
 developers.eveonline.com/static-data), in the shape the app reads: Fuzzwork's table
 and column names (docs/archive/SDE_MIGRATION_PLAN.md, step 9.1).
 
@@ -10,7 +10,7 @@ alone is over 200 MB), writes rows in batches, runs the sanity checks, and only
 then moves the finished database to its destination.
 
 A record without a field the tables need raises SdeFormatError naming the file,
-line and field. Fields nobody reads are ignored, so CCP adding fields never
+line and field. Fields nobody reads are ignored, so Fenris Creations adding fields never
 breaks a build.
 """
 import json
@@ -108,7 +108,7 @@ def flag(path: str) -> Column:
 
 
 def const(value: Any, sql_type: str) -> Column:
-    """The same value in every row (a column the app expects but CCP doesn't have)."""
+    """The same value in every row (a column the app expects but Fenris Creations doesn't have)."""
     return Column(sql_type, lambda record, item: value)
 
 

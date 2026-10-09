@@ -40,7 +40,7 @@ TABLES = (
         "published": flag("published"),
         "volume": field("volume", REAL, optional=True),         # m³ per unit (assembled, for ships)
     }),
-    # CCP has no metaTypes file: each type names its variation parent (T1 module) itself.
+    # Fenris Creations has no metaTypes file: each type names its variation parent (T1 module) itself.
     Table("invMetaTypes", "types.jsonl", primary_key=("typeID",), indexes=(("parentTypeID",),),
           where=lambda record: "variationParentTypeID" in record or "metaGroupID" in record, columns={
         "typeID": key(),

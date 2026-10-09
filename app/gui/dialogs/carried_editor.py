@@ -28,12 +28,24 @@ class CarriedEditor:
         row.pack(fill=tk.BOTH, expand=True)
         self.listbox = tk.Listbox(row, height=6, activestyle="none", exportselection=False)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # A scrollbar for a long list (1.7.2 plan, 36): shown only while the ships don't all fit.
+        self.scrollbar = ttk.Scrollbar(row, orient=tk.VERTICAL, command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=self._on_scroll)
         buttons = ttk.Frame(row)
+        self._buttons = buttons
         buttons.pack(side=tk.LEFT, fill=tk.Y, padx=(5, 0))
         ttk.Button(buttons, text="+", width=3, command=self.open_chooser).pack(pady=(0, 4))
         ttk.Button(buttons, text="×", width=3, command=self.remove_selected).pack()
         self.lbl_empty = ttk.Label(self.listbox, text="No ships: press + to add one.", style=ui_style.ON_LIST_LABEL)
         self._draw()
+
+    def _on_scroll(self, first, last) -> None:
+        """The listbox moved or changed: the scrollbar follows, and hides when everything fits."""
+        self.scrollbar.set(first, last)
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self.scrollbar.pack_forget()
+        elif not self.scrollbar.winfo_manager():
+            self.scrollbar.pack(side=tk.LEFT, fill=tk.Y, before=self._buttons)
 
     def labels(self) -> List[str]:
         return [carried_label(r, self.app.fitting_manager, self.app.evedb_loader) for r in self.entries]

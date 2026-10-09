@@ -32,7 +32,7 @@ def _expires_soon(token: str, margin: int = 60) -> bool:
 
 class RealESIClient(IESIClient):
     """
-    A production-grade ESI client implementation for the actual CCP ESI.
+    A production-grade ESI client implementation for the actual ESI.
 
     Every call carries the User-Agent and compatibility date (esi_settings), and the
     client keeps to ESI's limits (RC2 §1): a 429 waits out Retry-After and tries again;

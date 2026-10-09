@@ -21,7 +21,7 @@ Skim [Getting started](#getting-started) first, then use the [workflows](#workfl
 5. **Assign your ships.** In **Ships**, give each of your ships the fitting it's meant to fly. The audit only checks assigned ships. See [Assign your ships](#assign-your-ships).
 6. **Audit.** In **Doctrines**, pick the doctrine and press **Run Doctrine Audit**. See [Read an audit](#read-an-audit).
 
-The first time it starts, the tool downloads CCP's game data (about 100 MB) and builds its database. When an update needs new data, it offers to rebuild it; **Tools ▸ Check for DB Update** checks for a newer CCP release.
+The first time it starts, the tool downloads Fenris Creations' game data (about 100 MB) and builds its database. When an update needs new data, it offers to rebuild it; **Tools ▸ Check for DB Update** checks for a newer Fenris Creations release.
 
 ## The tabs
 
@@ -33,9 +33,11 @@ What it checks comes from three places: the doctrine and roles in the [Library](
 
 ### The Ships tab
 
-Every ship one holder has. Pick the holder at the top: one of your characters, or a corporation ([corporations](#corporations)). The list is grouped by place, then hangar (your personal hangar, a corporation division by name, deliveries, asset safety), then ship. A ship carried inside another, in its ship maintenance bay or fleet hangar, sits under its carrier.
+Every ship one holder has. Pick the holder at the top: one of your characters, or a corporation ([corporations](#corporations)). The list is grouped by place, then hangar (your personal hangar, a corporation division by name, deliveries, asset safety), then ship. A ship carried inside another, in its ship maintenance bay or fleet hangar, sits under its carrier. **Ship** shows the hull; the name you gave it in game is in **Name**, beside it.
 
 - Select ships of one hull, choose a fitting, press **Assign Fitting**. **Clear Fitting** takes it away.
+- **Several ships of one hull** (Ctrl- or Shift-click), then right-click ▸ **Onboard These Ships…**: one window for all of them, with **Fitting** (any saved fitting of the hull, or <Personal>), **Owner** and **Home**, set together with **Apply**. No doctrine is needed. Leave Home empty to keep each ship's Home, or give it the system it's in.
+- **Columns:** drag a column's edge to resize it; the widths are remembered for every character and corporation. The last column, **Owner**, takes whatever room is left.
 - **Owner** says whose requirements the ship serves ([owners](#owners)).
 - **Assigned only** hides ships with no fitting.
 - On the right, the selected ship's **Audit** and **EFT** tabs ([check one ship](#check-one-ship)).
@@ -56,13 +58,19 @@ The **Hull** and **System** boxes are searchable: type a few letters to filter.
 
 ### The Fittings tab
 
-Your saved fittings, grouped by ship class and hull.
+Your saved fittings, grouped by ship class and hull, in a list down the left. Beside it, two tabs for the selected fitting:
+
+- **Loadout** (shown first):
+  - **Left:** the fit, one line per slot (empty slots faded), then the drone or fighter bay. A hull with neither shows a faded **Drone bay 0 m³** box.
+  - **Right:** the cargo (and fleet hangar), then the fitting's doctrine requirements, edited right there ([capitals](#set-up-a-capital)).
+  - **An implant set** shows just its implants.
+- **EFT text**: the fitting as EFT text. **Edit** and **New Fitting** switch to it.
 
 - **Search**: type in the box above the list to show only fittings whose ship class, hull or name contains the text. **Clear** (or Esc) shows them all again.
 - **New Fitting**: paste EFT text from the game. Tick **Shared Doctrine Fitting** for a fitting that's part of a doctrine you'll share ([shared and local](#shared-and-local)).
-- **Edit**, then **Save**: change a fitting's EFT text. Unknown items are listed.
+- **Edit**, then **Save**: change a fitting's EFT text. Anything the EVE database doesn't know is listed and left out.
 - If a fit you import or save is identical to one already saved (same hull, modules, drones, fighters and cargo, whatever its name), the tool says which and asks before saving another copy.
-- **Edit Doctrine Requirements**: what a capital or other ship carries beyond its EFT text ([capitals](#set-up-a-capital)).
+- **Requirements you haven't saved:** picking another fitting, or pressing **Edit** or **New Fitting**, asks first. **Yes** saves them, **No** discards them, **Cancel** stays.
 - Right-click a fitting to **Rename…**, **Delete…** or **Copy-Multibuy** (a whole ship's worth, for the game's Multibuy).
 
 A fitting for the **Capsule** with implants in it is an [implant set](#implant-sets).
@@ -71,7 +79,7 @@ A fitting for the **Capsule** with implants in it is an [implant set](#implant-s
 
 **Connected Characters**, **Pull All**, **Auto Pull**, **Appearance** (the colour theme) and **ESI Features**. Right-click a character (or select it and press Delete) ▸ **Remove Character…**. Under **Pull All**, a line says what a pull is doing: which character, a safe-mode countdown, characters skipped.
 
-**ESI Features** turns features that use extra data from CCP on and off. A feature that's off makes no calls and shows nothing. So far:
+**ESI Features** turns features that use extra data from Fenris Creations on and off. A feature that's off makes no calls and shows nothing. So far:
 
 - **Skill check:** pulls each character's skills with their assets and checks them against their doctrine fittings ([skill check](#skill-check)).
 - **Open in the game client:** the shopping list can set a route, show the market or start a mail in a character's EVE client ([open in game](#open-in-the-game-client)).
@@ -83,14 +91,14 @@ A fitting for the **Capsule** with implants in it is an [implant set](#implant-s
 
 ### Tranquility's status
 
-The lamp on the right of the tab row shows Tranquility's status. The app checks it before anything calls CCP.
+The lamp on the right of the tab row shows Tranquility's status. The app checks it before anything calls Fenris Creations.
 
 - **Green:** online.
-- **Amber:** online with problems. In **VIP mode** (only CCP staff can log in), calls to CCP are off. When CCP reports **ESI degraded**, they still go ahead, but some may fail.
+- **Amber:** online with problems. In **VIP mode** (only Fenris Creations staff can log in), calls to Fenris Creations are off. When Fenris Creations reports **ESI degraded**, they still go ahead, but some may fail.
 - **Red:** offline, or the **daily downtime** (10:55–11:15 UTC; a good check from 11:10 ends it early).
 - **Grey:** unknown, e.g. no internet.
 
-A **red dot** on the lamp means CCP's status page has something new: an incident, or maintenance coming up. Hover over the lamp to read it. Click it to open the page, which also clears the dot. The dot clears itself after an hour too, or when the incident is resolved.
+A **red dot** on the lamp means Fenris Creations' status page has something new: an incident, or maintenance coming up. Hover over the lamp to read it. Click it to open the page, which also clears the dot. The dot clears itself after an hour too, or when the incident is resolved.
 
 **While Tranquility is down:**
 - **Pull All**, **Add Character** and **Check for DB Update** are off. Everything that works from what you've already pulled keeps working: the library, audits, exports.
@@ -98,7 +106,7 @@ A **red dot** on the lamp means CCP's status page has something new: an incident
 
 **When a pull fails part way:**
 1. **The first failure** stops the pull. You're asked whether to **Retry All** characters.
-2. **If it fails again,** the app goes into a 5-minute **safe mode**, reading CCP's status page every 30 seconds.
+2. **If it fails again,** the app goes into a 5-minute **safe mode**, reading Fenris Creations' status page every 30 seconds.
    - If the page reports a problem, pulls are **on hold** until Tranquility is back.
    - If the page is clear, the pull carries on from the character that failed.
 3. **A character that fails again** is skipped, and the rest are pulled.
@@ -169,16 +177,18 @@ Above the audit tree, **By System** swaps the doctrine box for a system box: **A
 Two buttons beside it each open a preview; nothing changes until you press **Apply**:
 
 - **Onboard Ships Here…** (new ships, first-time setup): ships in the system with no fitting. Each is offered the fittings its owner's requirements there use for its hull (already chosen when there's one), **Skip**, or **<Personal>**, with how it would audit. **Next** lists ships whose hull has no saved fitting at all, ticked, to mark them <Personal>. Applied, each gets its fitting, its owner and the system as its Home.
+  - **Owner: a corporation** (tick it, then pick the corporation): every ship onboarded in the window belongs to that corporation instead of the character holding it. Useful when you've taken ships out of a corporation hangar you can't see in full, fitted them, and want them marked as the corporation's. Each ship is then offered every saved fitting of its hull, doctrine or not, and hulls nothing in the system requires join the list. Corporation ships don't count towards a character's requirements.
 - **Adopt Ships Here…** (ships moved for a deployment): ships in the system with a fitting whose Home is somewhere else, or not set. Ticked ones get the system as their Home; their fitting doesn't change. Ships whose fitting nothing in the system uses can't be ticked. The warning under the list names any system the move would leave short (it then fails there, until a ship is bought or moved back).
 
 ### Check one ship
 
-In [Ships](#the-ships-tab), select one ship with a fitting. On the right:
+In [Ships](#the-ships-tab), select one ship. On the right:
 
 - **Audit**: the same check as in an audit, for this ship alone.
 - **EFT**: the ship in EFT layout. The switch at the top changes the view:
   - **Current**, what's on the ship: green in place, orange in the wrong place, struck through to take off.
   - **Expected**, what the fitting says: green aboard, orange aboard but elsewhere, red missing.
+  - **A ship with no fitting assigned:** **Current** shows it as it's fitted now, all in green; **Expected** has nothing to show until it has a fitting.
 
 Both views come from the same check as the Audit tab, so they always agree.
 
@@ -305,12 +315,12 @@ A character added before this feature needs adding again (**Characters ▸ Add C
 
 ### Set up a capital
 
-In [Fittings](#the-fittings-tab), select the fitting and press **Edit Doctrine Requirements**. The boxes shown depend on the hull's bays:
+In [Fittings](#the-fittings-tab), select the fitting: its **Loadout** shows the requirement boxes its hull has, under the cargo. Change them, then press **Save Requirements**; **Clear all** removes them all (it asks first). The boxes:
 
 - **Fuel Bay**: a slider and number per fuel. Each slider stops where the bay is full alongside the others. Jump fuel and module fuels (Strontium for Siege and Triage) are listed; **Add fuel** adds another. A fuel at 0 isn't required.
 - **Fleet Hangar + cargo**: extra stock, one item per line, "Name x100".
-- **Ship Maintenance Bay**: press **+** to add a ship: a hull with any fitting, or one of your saved fittings of it. **×** removes the selected entry. A carried ship that doesn't match its fitting is reported under **📦 Ships still packed**.
-- **Fighter tubes**: how many full squadrons of each fighter type are loaded in tubes. With any set, the tubes must hold exactly those, and the fighter bay exactly the rest. Left at 0, tubes and bay are counted together.
+- **Ship Maintenance Bay**: the list scrolls when it's long. Press **+** to add a ship: a hull with any fitting, or one of your saved fittings of it. **×** removes the selected entry. A carried ship that doesn't match its fitting is reported under **📦 Ships still packed**.
+- **Fighter tubes**: in the fighter bay box, beside each fighter type: how many full squadrons of it are loaded in tubes. With any set, the tubes must hold exactly those, and the fighter bay exactly the rest. Left at 0, tubes and bay are counted together.
 - **Escape Bay**: the escape frigate's fitting, or **Any ship**.
 - **Notes**: shown on the ship's row in audits.
 
@@ -349,12 +359,13 @@ Each assigned ship has an **owner**: a character or a corporation. It's whoever 
 ### Menus
 
 - **Characters ▸ Add Character / Remove Character…**: removing a character deletes their login and asset data and their role assignments.
-- **Tools ▸ Check for DB Update**: newer CCP game data.
+- **Tools ▸ Check for DB Update**: newer Fenris Creations game data, with a link to EVE's patch notes. A new database is applied when the app starts, so after the download it offers **Restart now?**
 - **Tools ▸ Name Unknown Structures…**: name a player structure that none of your characters can see.
-- **Tools ▸ Clear Asset Data… / Clear Non-Doctrine Data… / Clear Library… / Full Reset…**: delete pulled data, local records, the whole library, or everything. Each asks first.
+- **Tools ▸ Clear Asset Data… / Clear Non-Doctrine Data… / Clear Library… / Full Reset…**: delete pulled data, local records, the whole library, or everything. Each asks first. After a Full Reset the app has to start again: **Yes** restarts it, **No** closes it.
 - **Debug ▸ View Logs / Export Logs**: what the tool did, for bug reports.
 - **Help ▸ User Guide** (F1): this guide.
+- **Help ▸ Check for Updates…**: a newer version of the tool. The installed version downloads it, checks it and installs it, then opens again with your data kept; the portable zip opens the release page. **Options ▸ Updates** switches the quiet once-a-day check at startup.
 
 ### What stays private
 
-Logins, assets, clones, corporation data and ship assignments stay in the tool's data folder on your computer. The tool talks only to EVE's servers.
+Logins, assets, clones, corporation data and ship assignments stay in the tool's data folder on your computer. The tool talks only to EVE's servers, and to GitHub when it checks for a new version of itself.

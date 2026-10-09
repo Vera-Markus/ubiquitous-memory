@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 
 CHUNK = 1024 * 1024
 
-# CCP's official SDE (docs/archive/SDE_MIGRATION_PLAN.md, step 9.3). latest.jsonl names the
+# Fenris Creations' official SDE (docs/archive/SDE_MIGRATION_PLAN.md, step 9.3). latest.jsonl names the
 # current release; each release's zip has its own URL, so the build recorded is the
-# one actually downloaded even if CCP publishes another mid-download.
+# one actually downloaded even if Fenris Creations publishes another mid-download.
 LATEST_URL = "https://developers.eveonline.com/static-data/tranquility/latest.jsonl"
 ZIP_URL = "https://developers.eveonline.com/static-data/tranquility/eve-online-static-data-{build}-jsonl.zip"
 
@@ -35,7 +35,7 @@ class UpdateCheck:
     """What Check for DB Update found (UI rework step 5.5)."""
     status: str                          # "newer", "current", "pending" (downloaded, restart to apply) or "unknown"
     message: str
-    remote_date: Optional[str] = None    # CCP's release date of the latest build (ISO 8601)
+    remote_date: Optional[str] = None    # Fenris Creations' release date of the latest build (ISO 8601)
     local_date: Optional[str] = None     # the installed database's release date, or its file date
     remote_build: Optional[int] = None
     local_build: Optional[int] = None
@@ -43,10 +43,10 @@ class UpdateCheck:
 
 class DatabaseBootstrapperService:
     """
-    Downloads CCP's SDE, builds the EVE database from it (sde_builder) and installs it.
+    Downloads Fenris Creations' SDE, builds the EVE database from it (sde_builder) and installs it.
 
     A build is saved as eve.db.new and applied at the next start (the running app
-    has eve.db open). Each database records its CCP build number in its sdeInfo
+    has eve.db open). Each database records its Fenris Creations build number in its sdeInfo
     table, and eve.db.new.json / config/db_version.json keep the same record next
     to it, so Check for DB Update only has to fetch latest.jsonl to compare.
     """
@@ -90,7 +90,7 @@ class DatabaseBootstrapperService:
         return {"build_number": row[0], "release_date": row[1], "schema_version": row[2]}
 
     def installed_version(self) -> Optional[Dict]:
-        """The installed database's CCP build, or None for a database that doesn't record one (Fuzzwork's)."""
+        """The installed database's Fenris Creations build, or None for a database that doesn't record one (Fuzzwork's)."""
         info = self._sde_info(self.db_path)
         if info:
             return info
@@ -113,7 +113,7 @@ class DatabaseBootstrapperService:
 
     @staticmethod
     def latest_release(timeout: float = 15) -> Dict:
-        """CCP's current release: {"build_number", "release_date"}. Raises requests or ValueError errors."""
+        """Fenris Creations' current release: {"build_number", "release_date"}. Raises requests or ValueError errors."""
         response = requests.get(LATEST_URL, timeout=timeout)
         response.raise_for_status()
         for line in response.text.splitlines():
@@ -124,7 +124,7 @@ class DatabaseBootstrapperService:
         raise ValueError(f"No 'sde' record in {LATEST_URL}")
 
     def check_for_update(self, timeout: float = 15) -> UpdateCheck:
-        """Asks CCP which release is current (latest.jsonl, a few bytes) and compares it with the installed one."""
+        """Asks Fenris Creations which release is current (latest.jsonl, a few bytes) and compares it with the installed one."""
         installed = self.installed_version()
         if installed:
             local_date, local_build = installed.get("release_date"), installed.get("build_number")
@@ -137,7 +137,7 @@ class DatabaseBootstrapperService:
         try:
             latest = self.latest_release(timeout)
         except (requests.exceptions.RequestException, ValueError, KeyError) as e:
-            return UpdateCheck("unknown", f"Couldn't reach CCP's database server: {e}", None, local_date,
+            return UpdateCheck("unknown", f"Couldn't reach Fenris Creations' database server: {e}", None, local_date,
                                None, local_build)
         remote = dict(remote_date=latest["release_date"], local_date=local_date,
                       remote_build=latest["build_number"], local_build=local_build)
@@ -148,7 +148,7 @@ class DatabaseBootstrapperService:
                                **remote)
         if installed is None:
             if self.db_path.exists():
-                return UpdateCheck("newer", "Switch to CCP's official database: the database shrinks from about "
+                return UpdateCheck("newer", "Switch to Fenris Creations' official database: the database shrinks from about "
                                    "500 MB to about 30 MB.", **remote)
             return UpdateCheck("newer", "No EVE database is installed.", **remote)
         if local_build >= latest["build_number"]:
@@ -159,7 +159,7 @@ class DatabaseBootstrapperService:
 
     def download_and_install_db(self, progress: Optional[ProgressCallback] = None) -> Tuple[bool, str]:
         """
-        Downloads CCP's latest SDE and builds the database from it as eve.db.new,
+        Downloads Fenris Creations' latest SDE and builds the database from it as eve.db.new,
         which is applied at the next start (apply_pending_update). Reports progress
         if given a callback. Returns (success, message).
         """
@@ -220,7 +220,7 @@ class DatabaseBootstrapperService:
         except requests.exceptions.RequestException as e:
             return False, f"Download failed: {e}"
         except ValueError as e:
-            return False, f"CCP's release information couldn't be read: {e}"
+            return False, f"Fenris Creations' release information couldn't be read: {e}"
         except OSError as e:
             if e.errno == 28: # No space left on device
                 return False, "Insufficient disk space."

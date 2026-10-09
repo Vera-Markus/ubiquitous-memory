@@ -11,6 +11,7 @@ from tkinter import filedialog, ttk
 from app.gui import themed_dialogs as messagebox
 
 from app.version import BUILD_DATE, __version__
+from app.restart import restart_app
 from app.logging_config import GUI_LOGGER, session_log_path, start_session_log
 from app.gui.dialogs.log_viewer import LogViewer
 from app.gui.dialogs.confirm_typed_dialog import ConfirmTypedDialog
@@ -34,7 +35,7 @@ from app.esi_service.oauth_config import CLIENT_ID, REDIRECT_URI, SCOPES
 from app.services.export_resolved_locations import save_manual_location, skip_location_prompt, structures_to_name
 from app.services.pull_state_service import AUTO_PULL_INTERVAL_SECONDS, AUTO_PULL_RETRY_SECONDS, PullStateService
 from app.services.pull_sequence import Hooks
-from app.services import esi_features
+from app.services import app_updater, esi_features
 from app.esi_service import server_status as server_status_module
 from app.esi_service.server_status import ServerStatus
 from app.gui.server_status_icon import ServerStatusIcon
@@ -56,15 +57,17 @@ from app.gui.tabs.fittings_tab import FittingsTab
 from app.gui.tabs.library_tab import LibraryTab
 from app.gui import style as ui_style
 
-MAX_LOG_LINES = 2000        # Debug ▸ View Logs shows the most recent lines; the session file keeps them all
+# Check for DB Update (1.7.2 plan, 33.4): the developer's official patch notes, linked from its message.
+PATCH_NOTES_LINK = ("EVE Online patch notes", "https://www.eveonline.com/news/t/patch-notes")
+MAX_LOG_LINES = 2000       # Debug ▸ View Logs shows the most recent lines; the session file keeps them all
 
 # Shown once, and again after a Full Reset (ESI features plan 25.6, D11.10).
-STATUS_NOTICE = ("The app now checks Tranquility's status before it calls CCP.\n\n"
+STATUS_NOTICE = ("The app now checks Tranquility's status before it calls Fenris Creations.\n\n"
                  "The lamp on the right of the tab row shows it: green online, amber with problems "
-                 "(VIP mode, or ESI degraded), red offline, grey unknown. A red dot means CCP's status "
+                 "(VIP mode, or ESI degraded), red offline, grey unknown. A red dot means Fenris Creations' status "
                  "page has a new message: hover over the lamp to read it, click it to open the page.\n\n"
                  "While Tranquility is down, and during daily downtime (10:55–11:15 UTC), buttons that "
-                 "call CCP are off; everything else keeps working. Automatic pulls wait and try again "
+                 "call Fenris Creations are off; everything else keeps working. Automatic pulls wait and try again "
                  "every 5 minutes.")
 
 
@@ -73,6 +76,11 @@ PUBLIC_CONTRACTS_WARNING = (
     "This is slow the first time: what each contract holds is read one at a time, at a pace ESI accepts. "
     "A wide search can take 5 to 10 minutes. The window fills in nearest first, and contracts read once "
     "aren't read again.\n\nTurn public contracts on?")
+
+
+def character_count_title(count: int) -> str:
+    """The Options tab's character panel title: "Connected Characters (5)" (1.7.2 plan, 34)."""
+    return f"Connected Characters ({count})"
 
 
 class EVEFleetGUI:
@@ -88,7 +96,7 @@ class EVEFleetGUI:
         self._login_running = False     # Characters ▸ Add Character is waiting for the browser
         self._auto_pull_pending = False
         self._status_checking = False
-        # Tranquility's status, checked before anything calls CCP (ESI features plan, Phase 25)
+        # Tranquility's status, checked before anything calls Fenris Creations (ESI features plan, Phase 25)
         self.server_status = ServerStatus()
 
         # Logging first, so every line from here on reaches the session file (F10).
@@ -138,7 +146,7 @@ class EVEFleetGUI:
 
         if not self.bootstrapper.is_database_present():
             if messagebox.askyesno("Database Missing", "EVE database not found. Would you like to download it now? "
-                                   "(about 100 MB from CCP; the database is built from it in a few seconds)"):
+                                   "(about 100 MB from Fenris Creations; the database is built from it in a few seconds)"):
                 success, message = self._download_database()
                 if not success:
                     messagebox.showerror("Download Failed", message)
@@ -160,6 +168,7 @@ class EVEFleetGUI:
         self._setup_ui()
         self.root.after(100, self._poll_server_status)
         self.root.after(800, self._show_status_notice)
+        self.root.after(5000, self._startup_update_check)
 
     def _setup_services(self):
         """Initializes the remaining application services."""
@@ -221,7 +230,7 @@ class EVEFleetGUI:
         tables): offer to download and rebuild it now. Declining keeps the old one.
         """
         if not messagebox.askyesno("Database Update Needed", "This version of the tool needs a rebuilt EVE database. "
-                                   "Download it now? (about 100 MB from CCP)\n\nWithout it, the app keeps using "
+                                   "Download it now? (about 100 MB from Fenris Creations)\n\nWithout it, the app keeps using "
                                    "your current database, and features that need the new data won't work."):
             self._log("[WARNING] The EVE database needs rebuilding for this version; kept the old one for now.")
             return
@@ -264,7 +273,7 @@ class EVEFleetGUI:
 
     def _download_database(self):
         """Downloads the EVE database with the progress window. Returns (success, message)."""
-        allowed, why = self._may_call_ccp()         # D11.9: nothing goes to CCP during an outage
+        allowed, why = self._may_call_ccp()         # D11.9: nothing goes to Fenris Creations during an outage
         if not allowed:
             return False, why
         self._db_job_running = True
@@ -303,31 +312,47 @@ class EVEFleetGUI:
         try:
             check = self._run_with_progress("Checking for a database update",
                                             lambda report: self.bootstrapper.check_for_update(),
-                                            status="Asking CCP's server…")
+                                            status="Asking Fenris Creations' server…")
         finally:
             self._db_job_running = False
         server = self._readable_version(check.remote_build, check.remote_date)
         yours = self._readable_version(check.local_build, check.local_date)
-        self._log(f"[INFO] Database update check: {check.status}. CCP's: {server}. Yours: {yours}.")
+        self._log(f"[INFO] Database update check: {check.status}. Fenris Creations' latest: {server}. Yours: {yours}.")
 
-        details = f"\n\nCCP's latest: {server}\nYours: {yours}"
-        if check.status in ("current", "pending"):
-            messagebox.showinfo("Check for DB Update", check.message + details)
+        details = f"\n\nFenris Creations' latest: {server}\nYours: {yours}"
+        notes = PATCH_NOTES_LINK if check.status != "unknown" else None
+        if check.status == "current":
+            messagebox.showinfo("Check for DB Update", check.message + details, link=notes)
+            return
+        if check.status == "pending":
+            self._offer_restart("Check for DB Update", check.message + details, link=notes)
             return
         if check.status == "newer":
             question = check.message + details + "\n\nDownload it now (about 100 MB)? It's applied the next time the app starts."
         else:
             question = check.message + details + "\n\nDownload the latest database anyway (about 100 MB)? It's applied the next time the app starts."
-        if not messagebox.askyesno("Check for DB Update", question):
+        if not messagebox.askyesno("Check for DB Update", question, link=notes):
             return
         self._log("[INFO] Starting database update download...")
         success, message = self._download_database()
         if success:
             self._log(f"[SUCCESS] {message}")
-            messagebox.showinfo("Update Downloaded", message)
+            self._offer_restart("Update Downloaded", "The new EVE database is downloaded. It's applied when the app "
+                                                     "starts again.")
         else:
             self._log(f"[ERROR] {message}")
             messagebox.showerror("Update Failed", message)
+
+    def _offer_restart(self, title: str, message: str, link=None) -> bool:
+        """Restart Now? (1.7.2 plan, 33.1). Yes starts a new copy and closes this one. Returns whether it did."""
+        if not messagebox.askyesno(title, message + "\n\nRestart now?", link=link):
+            return False
+        if self.asset_pipeline_service.is_running:
+            messagebox.showwarning(title, "An asset pull is running: restart when it finishes.")
+            return False
+        self._log("[INFO] Restarting.")
+        restart_app(self.root)
+        return True
 
     def _log(self, message: str):
         """
@@ -389,12 +414,89 @@ class EVEFleetGUI:
         from app.gui.dialogs.user_guide import UserGuideWindow
         UserGuideWindow.show(self.root)
 
+    # --- Help ▸ Check for Updates (app/services/app_updater.py) ---------------------------------
+
+    UPDATE_STAGES = {"download": "Downloading"}
+    MAX_NOTES = 1500
+
+    def _handle_update_check_toggle(self):
+        on = self.update_check_var.get()
+        app_updater.set_check_at_startup(on, CONFIG_DIR)
+        self._log(f"[INFO] Check for updates at startup: {'on' if on else 'off'}.")
+
+    def _handle_check_for_updates(self):
+        """Help ▸ Check for Updates…: ask GitHub, then offer the new version."""
+        check = self._run_with_progress("Checking for updates", lambda report: app_updater.check_for_update(),
+                                        status="Asking GitHub…")
+        self._log(f"[INFO] Update check: {check.message}")
+        if check.status == "unknown":
+            messagebox.showwarning("Check for Updates", check.message)
+        elif check.status == "current":
+            messagebox.showinfo("Check for Updates", check.message)
+        else:
+            self._offer_update(check)
+
+    def _startup_update_check(self):
+        """Once a day at startup, quietly: says something only when there's a newer version."""
+        if not app_updater.startup_check_due(CONFIG_DIR):
+            return
+
+        def work():
+            check = app_updater.check_for_update()
+            if check.status != "unknown":
+                app_updater.record_startup_check(CONFIG_DIR)
+            self._log(f"[INFO] Startup update check: {check.message}")
+            if check.status == "newer":
+                try:
+                    self.root.after(0, lambda: self._offer_update(check))
+                except (RuntimeError, tk.TclError):
+                    pass        # the window is closing
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _offer_update(self, check):
+        """A newer release: install it (an installed copy) or open its page (portable, or from source)."""
+        release = check.release
+        notes = release.notes
+        if len(notes) > self.MAX_NOTES:
+            notes = notes[:self.MAX_NOTES].rstrip() + "\n…"
+        notes = f"\n\n{notes}" if notes else ""
+        kind = app_updater.install_kind()
+        if kind != "installed":
+            why = ("This copy is the portable zip: download the new zip and unzip it over this folder "
+                   "(keep the data folder)." if kind == "portable"
+                   else "This copy is running from source: pull the new code instead.")
+            if messagebox.askyesno("Update Available", f"{check.message}{notes}\n\n{why}\n\nOpen the release page?"):
+                import webbrowser
+                webbrowser.open(release.page_url)
+            return
+        if not messagebox.askyesno("Update Available",
+                                   f"{check.message}{notes}\n\nUpdate now? The app closes, installs the new "
+                                   "version and opens again. Your characters, library and settings are kept."):
+            return
+        if self.asset_pipeline_service.is_running or self._login_running or self._db_job_running:
+            messagebox.showwarning("Update", "A pull, login or database download is running. "
+                                   "Try again when it finishes (Help ▸ Check for Updates…).")
+            return
+        self._log(f"[INFO] Downloading version {release.label}...")
+        try:
+            installer = self._run_with_progress(f"Downloading version {release.label}",
+                                                lambda report: app_updater.download_installer(release, report),
+                                                self.UPDATE_STAGES, "Connecting…", ("download",))
+            app_updater.launch_installer(installer)
+        except (app_updater.UpdateError, OSError) as e:
+            self._log(f"[ERROR] Update failed: {e}")
+            messagebox.showerror("Update Failed", str(e))
+            return
+        self._log(f"[INFO] Installing version {release.label}; the app closes and opens again.")
+        self.root.destroy()
+
     def _handle_about(self):
         """Help ▸ About: the version, and when this program was built."""
         built = f"Built {BUILD_DATE}" if BUILD_DATE else "Running from source (not a release build)"
         messagebox.showinfo("About", f"EVE Fleet Management Tool\nVersion {__version__}\n{built}\n\n"
-                            "MIT licence. An unofficial fan project, not affiliated with or endorsed by CCP hf. "
-                            "EVE Online and all related names, images and data are trademarks or property of CCP hf.")
+                            "MIT licence. An unofficial fan project, not affiliated with or endorsed by Fenris Creations. "
+                            "EVE Online and all related names, images and data are trademarks or property of Fenris Creations.")
 
     def _setup_menu(self):
         """Sets up the main application menu bar."""
@@ -429,6 +531,7 @@ class EVEFleetGUI:
         self.help_menu = tk.Menu(self.menu_bar, tearoff=0)
         self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
         self.help_menu.add_command(label="User Guide", accelerator="F1", command=self._handle_user_guide)
+        self.help_menu.add_command(label="Check for Updates…", command=self._handle_check_for_updates)
         self.help_menu.add_command(label="About", command=self._handle_about)
         self.root.bind_all("<F1>", lambda e: self._handle_user_guide())
 
@@ -479,7 +582,8 @@ class EVEFleetGUI:
         paned_window.pack(fill=tk.BOTH, expand=True)
 
         # --- Left Side: Connected Characters ---
-        char_frame = ttk.LabelFrame(paned_window, text="Connected Characters", padding=(10, 10))
+        char_frame = ttk.LabelFrame(paned_window, text=character_count_title(0), padding=(10, 10))
+        self.char_frame = char_frame           # its title counts the characters (1.7.2 plan, 34)
         paned_window.add(char_frame, width=250)
         # The character list takes a quarter of the width the first time the tab is drawn; the divider
         # can still be dragged.
@@ -577,6 +681,14 @@ class EVEFleetGUI:
         self.theme_combo.pack(side=tk.LEFT, padx=5, pady=5)
         self.theme_combo.bind("<<ComboboxSelected>>", self._handle_theme_selected)
 
+        # Updates: the quiet once-a-day check at startup (Help ▸ Check for Updates… any time)
+        updates_panel = ttk.LabelFrame(settings_column, text="Updates", padding=(5, 5))
+        updates_panel.pack(fill=tk.X, pady=2)
+        self.update_check_var = tk.BooleanVar(value=app_updater.check_at_startup(CONFIG_DIR))
+        ttk.Checkbutton(updates_panel, text="Check for a new version when the app starts (once a day)",
+                        variable=self.update_check_var,
+                        command=self._handle_update_check_toggle).pack(side=tk.LEFT, padx=5, pady=2)
+
         # ESI Features: one switch per feature, remembered (ESI features plan 26.2)
         features_panel = ttk.LabelFrame(settings_column, text="ESI Features", padding=(5, 5))
         features_panel.pack(fill=tk.X, pady=2)
@@ -643,7 +755,7 @@ class EVEFleetGUI:
         self._update_ccp_controls()
 
     def _update_ccp_controls(self):
-        """Menu entries that call CCP are off while a login runs, or while Tranquility is down (D11.9)."""
+        """Menu entries that call Fenris Creations are off while a login runs, or while Tranquility is down (D11.9)."""
         locked = self.server_status.locked()
         self._set_menu_entry_state(self.characters_menu, "Add Character",
                                    tk.DISABLED if locked or self._login_running else tk.NORMAL)
@@ -699,7 +811,7 @@ class EVEFleetGUI:
         """Characters ▸ Add Character: starts the SSO login flow in a separate thread."""
         if not self._guard("Add Character", login=True):
             return
-        self._log("[INFO] Starting CCP Login flow...")
+        self._log("[INFO] Starting the EVE login...")
         self._set_add_character_enabled(False)
         
         thread = threading.Thread(target=self._run_async_loop, args=(self._execute_auth_flow(),), daemon=True)
@@ -980,7 +1092,7 @@ class EVEFleetGUI:
     def _may_call_ccp(self, login: bool = False):
         """
         Checks Tranquility's status (unless it was checked in the last 30 s) and says
-        whether calls to CCP may go ahead: (allowed, why). Any thread.
+        whether calls to Fenris Creations may go ahead: (allowed, why). Any thread.
         """
         try:
             self.server_status.ensure_fresh()
@@ -991,7 +1103,7 @@ class EVEFleetGUI:
         return allowed, why
 
     def _guard(self, title: str, login: bool = False) -> bool:
-        """A manual action that calls CCP: allowed, or a pop-up saying why not (D11.1)."""
+        """A manual action that calls Fenris Creations: allowed, or a pop-up saying why not (D11.1)."""
         allowed, why = self._may_call_ccp(login)
         if not allowed:
             self._log(f"[INFO] {title}: not now. {why}")
@@ -1331,11 +1443,9 @@ class EVEFleetGUI:
             success, message = self.reset_service.reset_local_data()
 
             if success:
-                # Instead of attempting to reconstruct state, inform user restart is required.
-                self.root.after(0, lambda: messagebox.showinfo("Reset Complete", f"{message}\n\nA restart of the application is required to apply changes."))
+                # Instead of attempting to reconstruct state, the app starts again (or closes).
                 self._log(f"[SUCCESS] {message}. Restart required.")
-                # Gracefully close the application
-                self.root.after(0, self.root.destroy)
+                self.root.after(0, lambda: self._after_reset(message))
             else:
                 self._log(f"[ERROR] Reset failed: {message}")
                 self.root.after(0, lambda: messagebox.showerror("Reset Error", message))
@@ -1343,6 +1453,15 @@ class EVEFleetGUI:
         except Exception as e:
             self._log(f"[ERROR] An unexpected error occurred during reset: {str(e)}")
             self.root.after(0, lambda e=e: messagebox.showerror("Reset Error", f"An unexpected error occurred: {e}"))
+
+    def _after_reset(self, message: str):
+        """Full Reset done (1.7.2 plan, 33.3): the app has to start again. Yes restarts it; No closes it, as before."""
+        if messagebox.askyesno("Reset Complete", f"{message}\n\nThe app has to start again to finish. "
+                                                 "Restart now? (No closes it.)"):
+            self._log("[INFO] Restarting after the reset.")
+            restart_app(self.root)
+        else:
+            self.root.destroy()
 
     def _handle_auto_pull_toggle(self):
         """Handles the Auto Pull toggle change."""
@@ -1388,6 +1507,7 @@ class EVEFleetGUI:
         self.character_list.delete(*self.character_list.get_children())
         for name, char_id in sorted(self.library_char_id_map.items(), key=lambda c: c[0].casefold()):
             self.character_list.insert("", tk.END, iid=str(char_id), text=name)
+        self.char_frame.config(text=character_count_title(len(self.library_char_id_map)))
 
     def _populate_audit_doctrine_combo(self):
         """Cross-tab refresh: doctrine changes update the Audit tab selector."""

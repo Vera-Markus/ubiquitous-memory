@@ -1,7 +1,7 @@
 """
-Settings sent with every ESI call, following CCP's ESI best practices (RC2 §1).
+Settings sent with every ESI call, following Fenris Creations' ESI best practices (RC2 §1).
 
-- User-Agent: the app's name and version and a contact, so CCP can reach the
+- User-Agent: the app's name and version and a contact, so Fenris Creations can reach the
   developer about the app's traffic. Testers can read it in the source; that's intended.
 - X-Compatibility-Date: the ESI behaviour the app was checked against. Without it,
   ESI answers as of its oldest date (2020-01-01).

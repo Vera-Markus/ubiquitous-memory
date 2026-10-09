@@ -4,8 +4,7 @@ from app.gui import themed_dialogs as simpledialog
 from tkinter import ttk
 from app.gui import themed_dialogs as messagebox
 
-from app.gui.dialogs.doctrine_metadata_dialog import DoctrineMetadataDialog
-from app.gui.dialogs.escape_ship_chooser import EscapeShipChooser
+from app.gui.loadout_view import LoadoutView
 from app.loaders.fitting_loader import parse_fit
 from app.loaders.fitting_validator import fittingValidator
 from app.loaders.role_manager import fitting_in_use
@@ -19,12 +18,17 @@ from app.services import esi_features
 from app.gui.style import DANGER_BUTTON
 
 
+LIST_WIDTH = 280      # the fitting list: 20% of the 1400 px window, not draggable (1.7.2 plan, 36.3.1)
+
+
 class FittingsTab:
     """
     Fittings tab (formerly Import): browse saved fittings in a Class → Hull → Fitting tree
-    (UI rework step 6.3), rename and delete them. One box beside the tree shows the
-    selected fitting's modules; Edit turns it into the fitting's EFT text to change and
-    Save, and New Fitting empties it to paste a fit and Import.
+    (UI rework step 6.3), rename and delete them. Beside the tree (locked at 20% of the
+    window, 1.7.2 plan 36.3), two tabs: **Loadout**, the selected fitting laid out with its
+    doctrine requirements edited in place (LoadoutView), and **EFT text**. Edit turns the
+    text into the fitting's EFT to change and Save; New Fitting empties it to paste a fit
+    and Import.
 
     Extracted from EVEFleetGUI (step 2.4). Shared managers, the root window
     and the Library tab are owned by the app and read through it. Step 2.4
@@ -77,13 +81,12 @@ class FittingsTab:
     def _setup_fittings_tab(self):
         # Left: the fitting tree. Right: one box that shows the selected fitting's details,
         # or EFT text to edit (Edit) or paste (New Fitting).
-        paned_window = tk.PanedWindow(self.frame, orient=tk.HORIZONTAL)
-        paned_window.pack(fill=tk.BOTH, expand=True)
-
-        left_frame = ttk.Frame(paned_window)
-        right_frame = ttk.Frame(paned_window)
-        paned_window.add(left_frame)
-        paned_window.add(right_frame)
+        # The list is locked at 20% of the window (1.7.2 plan, 36.3.1): the window is a fixed 1400 px.
+        left_frame = ttk.Frame(self.frame, width=LIST_WIDTH)
+        left_frame.pack(side=tk.LEFT, fill=tk.Y)
+        left_frame.pack_propagate(False)
+        right_frame = ttk.Frame(self.frame)
+        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # Fitting List (Navigation)
         self.fitting_list_container = ttk.Frame(left_frame)
@@ -112,30 +115,25 @@ class FittingsTab:
         self.fitting_tree.config(yscrollcommand=scrollbar.set)
 
         # Rename and Delete act on the selected fitting row (also on its right-click menu)
+        # Two even columns, so they fit the list's fixed 280 px (1.7.2 plan, 36.3.1).
         fitting_buttons = ttk.Frame(self.fitting_list_container)
-        fitting_buttons.pack(pady=5)
-        self.btn_rename_fitting = ttk.Button(
-            fitting_buttons,
-            text="Rename Selected fitting",
-            command=self._handle_rename_fitting
-        )
-        self.btn_rename_fitting.pack(side=tk.LEFT, padx=5)
-        self.btn_delete_fitting = ttk.Button(
-            fitting_buttons,
-            text="Delete Selected fitting",
-            command=self._handle_delete_fitting,
-            style=DANGER_BUTTON
-        )
-        self.btn_delete_fitting.pack(side=tk.LEFT, padx=5)
+        fitting_buttons.pack(fill=tk.X, pady=5)
+        fitting_buttons.columnconfigure((0, 1), weight=1, uniform="buttons")
+        self.btn_rename_fitting = ttk.Button(fitting_buttons, text="Rename…", command=self._handle_rename_fitting)
+        self.btn_rename_fitting.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        self.btn_delete_fitting = ttk.Button(fitting_buttons, text="Delete…", command=self._handle_delete_fitting,
+                                             style=DANGER_BUTTON)
+        self.btn_delete_fitting.grid(row=0, column=1, sticky="ew", padx=(3, 0))
 
         # In-game fitting sync (ESI features plan 29.2, 29.5): shown while Options ▸ Fitting sync is on.
+        # One per row: side by side, their names don't fit the list's width.
         self.game_buttons = ttk.Frame(self.fitting_list_container)
         self.btn_import_from_game = ttk.Button(self.game_buttons, text="Import from Game…",
                                                command=self._handle_import_from_game)
-        self.btn_import_from_game.pack(side=tk.LEFT, padx=5)
+        self.btn_import_from_game.pack(fill=tk.X)
         self.btn_deleted_from_game = ttk.Button(self.game_buttons, text="Deleted from Game…",
                                                 command=self._handle_deleted_from_game)
-        self.btn_deleted_from_game.pack(side=tk.LEFT, padx=5)
+        self.btn_deleted_from_game.pack(fill=tk.X, pady=(5, 0))
         self.show_game_buttons()
 
         self.fitting_menu = tk.Menu(self.fitting_tree, tearoff=0)
@@ -145,32 +143,39 @@ class FittingsTab:
         self.fitting_menu.add_command(label="Copy-Multibuy", command=self._handle_copy_multibuy)
         self.fitting_tree.bind("<Button-3>", self._on_fitting_right_click)
 
-        # --- Right Frame: the fitting box ---
-        self.fit_title = ttk.Label(right_frame, font=(ui_style.FONT_FAMILY, 12, "bold"))
-        self.fit_title.pack(pady=10)
+        # --- Right Frame: the title and buttons on one row, then Loadout | EFT text (36.3.2) ---
+        header = ttk.Frame(right_frame)
+        header.pack(fill=tk.X, padx=10, pady=(8, 0))
+        self.fit_title = ttk.Label(header, font=(ui_style.FONT_FAMILY, 12, "bold"))
+        self.fit_title.pack(side=tk.LEFT)
 
         # _set_mode packs the buttons each mode uses into this row
-        self.fit_toolbar = ttk.Frame(right_frame)
-        self.fit_toolbar.pack(padx=10, fill=tk.X)
+        self.fit_toolbar = ttk.Frame(header)
+        self.fit_toolbar.pack(side=tk.RIGHT)
         self.btn_new_fitting = ttk.Button(self.fit_toolbar, text="New Fitting", command=self._handle_new_fitting)
         self.btn_edit_fitting = ttk.Button(self.fit_toolbar, text="Edit", command=self._handle_edit_fitting,
                                            state=tk.DISABLED)
-        # Enabled when the selected fitting's hull has a bay that takes doctrine requirements
-        self.btn_edit_requirements = ttk.Button(self.fit_toolbar, text="Edit Doctrine Requirements",
-                                                command=self._handle_edit_requirements, state=tk.DISABLED)
         self.btn_replace_fitting = ttk.Button(self.fit_toolbar, text="Save", command=self._handle_replace_fitting)
         self.btn_import = ttk.Button(self.fit_toolbar, text="Import fitting", command=self._handle_import)
         self.shared_doctrine_check = ttk.Checkbutton(self.fit_toolbar, text="Shared Doctrine Fitting",
                                                      variable=self.shared_doctrine_var)
         self.btn_cancel_edit = ttk.Button(self.fit_toolbar, text="Cancel", command=self._handle_cancel_edit)
         self._mode_widgets = {
-            "view": (self.btn_new_fitting, self.btn_edit_fitting, self.btn_edit_requirements),
+            "view": (self.btn_new_fitting, self.btn_edit_fitting),
             "edit": (self.btn_replace_fitting, self.btn_cancel_edit),
             "new": (self.btn_import, self.btn_cancel_edit, self.shared_doctrine_check),
         }
 
-        self.fit_text_area = ui_style.ScrolledText(right_frame, state='disabled')
-        self.fit_text_area.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
+        self.fit_view = ttk.Notebook(right_frame)
+        self.fit_view.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 10))
+        self.loadout = LoadoutView(self.fit_view, self.app)
+        self.fit_view.add(self.loadout.frame, text="Loadout")
+        text_tab = ttk.Frame(self.fit_view, padding=(4, 4))
+        self.fit_view.add(text_tab, text="EFT text")
+        self.fit_text_area = ui_style.ScrolledText(text_tab, state='disabled')
+        self.fit_text_area.pack(fill=tk.BOTH, expand=True)
+        self._shown_uid = None              # the fitting the Loadout shows (to go back to on Cancel)
+        self._reselecting = False
 
         self._set_mode("view")
         # Initial load of the listbox
@@ -181,7 +186,7 @@ class FittingsTab:
     def show_game_buttons(self):
         """Import from Game… and Deleted from Game… while Fitting sync is on (Options)."""
         if esi_features.enabled("fittings"):
-            self.game_buttons.pack(pady=(0, 5))
+            self.game_buttons.pack(fill=tk.X, pady=(0, 5))
         else:
             self.game_buttons.pack_forget()
 
@@ -213,11 +218,15 @@ class FittingsTab:
             self._edit_start_text = text
             self.fit_title.config(text="New Fitting: paste EFT text" if mode == "new" else "Editing Fitting (EFT)")
             self._show_text(text, editable=True)
+            self.fit_view.tab(0, state="disabled")          # the text is what's being worked on
+            self.fit_view.select(1)
             self.fit_text_area.focus_set()
-            self._update_edit_requirements_button()
+            self._update_buttons()
         else:
             self._editing_uid = None
-            self.fit_title.config(text="Fitting Details")
+            self.fit_view.tab(0, state="normal")
+            self.fit_view.select(0)
+            self._shown_uid = None                          # draw the Loadout again
             self._on_fitting_selected(None)
 
     def _show_text(self, text, editable=False):
@@ -227,6 +236,8 @@ class FittingsTab:
         self.fit_text_area.configure(state='normal' if editable else 'disabled')
 
     def _handle_new_fitting(self):
+        if not self._requirements_settled():
+            return
         self._editing_uid = None
         self._set_mode("new")
 
@@ -235,6 +246,8 @@ class FittingsTab:
         fitting = self._selected_fitting()
         if not fitting:
             messagebox.showwarning("No Selection", "Please select a fitting to edit.")
+            return
+        if not self._requirements_settled():
             return
         self._set_mode("edit", FittingDisplayFormatter.eft(fitting))
         self._editing_uid = fitting["fit_uid"]
@@ -433,7 +446,7 @@ class FittingsTab:
             if kept:
                 tree.selection_set(kept)
                 tree.see(kept[0])
-            self._update_edit_requirements_button()
+            self._update_buttons()
             if not quiet:
                 self._log(f"[SUCCESS] Refreshed fitting list ({len(fittings)} items).")
         except Exception as e:
@@ -441,21 +454,65 @@ class FittingsTab:
             messagebox.showerror("Error", f"Failed to refresh fitting list: {e}")
 
     def _on_fitting_selected(self, event):
-        """Shows the selected fitting's details. While editing, the box keeps the text being edited."""
-        self._update_edit_requirements_button()
+        """
+        Shows the selected fitting: its Loadout and its EFT text. While editing, the box keeps
+        the text being edited. Unsaved requirement changes are asked about first (Q36.1).
+        """
+        if self._reselecting:
+            return
         if self.mode != "view":
+            self._update_buttons()
             return
         fitting = self._selected_fitting()
-        if not fitting:
-            self._show_text("")
+        uid = fitting["fit_uid"] if fitting else None
+        if uid == self._shown_uid and self.loadout.fitting is not None:
+            self._update_buttons()
             return
-
+        if not self._requirements_settled():
+            self._reselect(self._shown_uid)                 # Cancel: stay on the fitting being edited
+            return
+        self._update_buttons()
+        self._shown_uid = uid
+        self.fit_title.config(text=f"{fitting['fit_name']}  ·  {fitting['hull']}" if fitting else "Fitting Details")
         try:
-            # Slot contents live under the record's "fit" key.
-            self._show_text(FittingDisplayFormatter.format(fitting.get("fit", fitting)))
+            self.loadout.show(fitting)
+            self._show_text(FittingDisplayFormatter.eft(fitting) if fitting else "")
         except Exception as e:
             self._log(f"[ERROR] Failed to display fitting details: {e}")
             messagebox.showerror("Error", f"Failed to display fitting details: {e}")
+
+    def _requirements_settled(self) -> bool:
+        """
+        Unsaved requirement changes (Q36.1): Save, Discard or Cancel. True to go on; False to
+        stay (Cancel, or a save that needs something fixed or a warning read first).
+        """
+        if not self.loadout.dirty():
+            return True
+        name = (self.loadout.fitting or {}).get("fit_name", "this fitting")
+        answer = messagebox.askyesnocancel("Unsaved Requirements",
+                                           f"Save the requirement changes to {name}?\n\n"
+                                           "Yes saves them, No discards them, Cancel stays here.")
+        if answer is None:
+            return False
+        if answer:
+            return self.loadout.save()
+        self._log(f"[INFO] Discarded the requirement changes to {name}.")
+        self.loadout.show(None)
+        return True
+
+    def _reselect(self, fit_uid):
+        """Puts the tree's selection back without redrawing the Loadout."""
+        row = f"fit:{fit_uid}" if fit_uid is not None else None
+        self._reselecting = True
+        try:
+            if row and self.fitting_tree.exists(row):
+                self.fitting_tree.selection_set(row)
+                self.fitting_tree.see(row)
+            else:
+                self.fitting_tree.selection_set(())
+            self.fitting_tree.update_idletasks()
+        finally:
+            self.fitting_tree.after_idle(lambda: setattr(self, "_reselecting", False))
 
     def _handle_replace_fitting(self):
         """Save in edit mode: replaces the fitting being edited with the box's EFT text."""
@@ -531,7 +588,7 @@ class FittingsTab:
                 updated_fitting = self.fitting_manager.get_fitting(fit_uid)
                 self._log(f"[SUCCESS] Replaced fitting UID {fit_uid}.")
                 self.root.after(0, lambda: self._finish_saving(updated_fitting))
-                self.root.after(150, lambda: self._offer_metadata_editor(fit_uid, replaced=True))
+                self.root.after(150, lambda: self._point_to_requirements(fit_uid, replaced=True))
                 if int(updated_fitting.get("version", 1)) > old_version:
                     # 29.4: pilots with an older copy saved in game are offered the update.
                     from app.gui.dialogs.game_fittings_dialogs import offer_update
@@ -563,12 +620,12 @@ class FittingsTab:
         messagebox.showerror("Validation Error", error_msg)
 
     def _show_parser_result(self, fit):
-        """Shows a parsed fit in the fitting box. Safe to call from a worker thread."""
-        text = FittingDisplayFormatter.format(fit)
+        """After an import or a Save: lines the parser couldn't find are listed (they were left out)."""
         unresolved = fit.get("unresolved") or []
         if unresolved:
-            text += "\n\nNot found in the EVE database (left out of the fit):\n" + "\n".join(f"- {name}" for name in unresolved)
-        self.root.after(0, lambda: self._show_text(text))
+            text = "Not found in the EVE database (left out of the fit):\n" + "\n".join(f"- {n}" for n in unresolved)
+            self._log(f"[WARNING] {len(unresolved)} line(s) not found in the EVE database: {', '.join(unresolved)}")
+            self.root.after(0, lambda: messagebox.showwarning("Left Out of the Fit", text))
 
     def _handle_import(self):
         fit_text = self.fit_text_area.get("1.0", tk.END).strip()
@@ -617,7 +674,7 @@ class FittingsTab:
             if new_fitting:
                 self._log(f"[SUCCESS] Imported fitting: {new_fitting['hull']} - {new_fitting['fit_name']}")
                 self.root.after(0, lambda: self._finish_saving(new_fitting))
-                self.root.after(150, lambda: self._offer_metadata_editor(new_fitting["fit_uid"]))
+                self.root.after(150, lambda: self._point_to_requirements(new_fitting["fit_uid"]))
             else:
                 self._log("[ERROR] Failed to import fitting.")
         except Exception as e:
@@ -625,16 +682,11 @@ class FittingsTab:
         finally:
             self.btn_import.config(state=tk.NORMAL)
 
-    # --- Doctrine requirements (design §6.2, §7) -----------------------------
+    # --- Doctrine requirements (design §6.2, §7): in the Loadout view since 1.7.2 -------------
 
-    def _update_edit_requirements_button(self):
-        """
-        Edit Requirements needs a fitting whose hull has requirement bays; Edit, Rename
-        and Delete need a fitting row. Rename and Delete wait while the box is being edited.
-        """
+    def _update_buttons(self):
+        """Edit, Rename and Delete need a fitting row; Rename and Delete wait while the box is being edited."""
         fitting = self._selected_fitting()
-        has_bays = bool(fitting) and bool(metadata_bays(fitting, self.evedb_loader))
-        self.btn_edit_requirements.config(state=tk.NORMAL if has_bays else tk.DISABLED)
         self.btn_edit_fitting.config(state=tk.NORMAL if fitting else tk.DISABLED)
         idle = fitting and self.mode == "view"
         self.btn_delete_fitting.config(state=tk.NORMAL if idle else tk.DISABLED)
@@ -645,41 +697,21 @@ class FittingsTab:
         return [row for class_row in self.fitting_tree.get_children()
                 for row in (class_row, *self.fitting_tree.get_children(class_row))]
 
-    def _handle_edit_requirements(self):
-        fitting = self._selected_fitting()
-        if not fitting:
-            messagebox.showwarning("No Selection", "Please select a fitting to edit its doctrine requirements.")
-            return
-        self._open_metadata_editor(fitting)
-
-    def _open_metadata_editor(self, fitting):
-        self.metadata_dialog = DoctrineMetadataDialog(self.app, fitting, on_saved=self._refresh_details)
-
-    def _open_escape_chooser(self, fitting):
-        self.metadata_dialog = EscapeShipChooser(self.app, fitting, on_saved=self._refresh_details)
-
-    def _refresh_details(self):
-        self._on_fitting_selected(None)
-
-    def _offer_metadata_editor(self, fit_uid, replaced=False):
+    def _point_to_requirements(self, fit_uid, replaced=False):
         """
-        After an import, offer the requirements editor when the hull has a metadata
-        bay (§6.2): the escape ship chooser when the escape bay is its only one,
-        otherwise a prompt for the full editor. A Devoter is never prompted. After a
-        replace, only fittings without requirements yet are prompted.
+        After an import (§6.2): a hull with requirement bays says so in its Loadout, which is
+        already showing. A Devoter says nothing; after a replace, only fittings without
+        requirements yet are pointed at them.
         """
         fitting = self.fitting_manager.get_fitting(fit_uid)
-        if not fitting:
+        if not fitting or self.loadout.fitting is None or self.loadout.fitting.get("fit_uid") != fit_uid:
             return
         kind = prompt_kind(fitting, self.evedb_loader)
-        if kind is None:
-            return
-        if replaced and not self.fitting_manager.get_metadata(fit_uid).is_empty():
+        if kind is None or (replaced and not self.fitting_manager.get_metadata(fit_uid).is_empty()):
             return
         if kind == "escape":
-            self._open_escape_chooser(fitting)
-            return
-        bays = bay_list_text(metadata_bays(fitting, self.evedb_loader))
-        if messagebox.askyesno("Doctrine Requirements",
-                               f"This {fitting['hull']} has {bays}.\n\nAdd doctrine requirements now?"):
-            self._open_metadata_editor(fitting)
+            text = f"This {fitting['hull']} has an escape bay: choose its escape ship below, then Save Requirements."
+        else:
+            bays = bay_list_text(metadata_bays(fitting, self.evedb_loader))
+            text = f"This {fitting['hull']} has {bays}: set its doctrine requirements here, then Save Requirements."
+        self.loadout.show_message([text])

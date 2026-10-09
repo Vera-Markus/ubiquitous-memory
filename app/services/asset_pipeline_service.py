@@ -84,7 +84,7 @@ class AssetPipelineService:
 
             if result.held or result.stopped:
                 log_callback("[WARNING] The asset pull didn't finish; the characters pulled so far are saved.")
-                return False      # no more calls to CCP: it's down, or the user stopped
+                return False      # no more calls to Fenris Creations: it's down, or the user stopped
 
             # 3. Name every location the assets sit in (NPC stations from the SDE,
             # player structures through ESI) so the audit can match them. The

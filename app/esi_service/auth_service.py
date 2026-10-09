@@ -27,7 +27,7 @@ def _utc_now() -> datetime:
 
 class AuthService:
     """
-    Handles OAuth2 PKCE authentication flow for CCP ESI, supporting multiple characters.
+    Handles OAuth2 PKCE authentication flow for ESI, supporting multiple characters.
 
     The app holds one instance (EVEFleetGUI's), shared with the asset pull, which runs
     on a worker thread with its own event loop: profile and index changes go through
@@ -35,7 +35,7 @@ class AuthService:
     """
     AUTH_BASE_URL = "https://login.eveonline.com/v2"
     TOKEN_BASE_URL = "https://login.eveonline.com/v2/oauth/token"
-    # Access tokens are JWTs signed by CCP (RS256); their keys are published here (F7).
+    # Access tokens are JWTs signed by Fenris Creations (RS256); their keys are published here (F7).
     JWKS_URL = "https://login.eveonline.com/oauth/jwks"
     ISSUERS = ("https://login.eveonline.com", "login.eveonline.com")
     AUTH_DIR = str(AUTH_DIR)
@@ -155,7 +155,7 @@ class AuthService:
         return None
 
     def signing_key(self, token: str):
-        """CCP's public key for this token (by its kid), from CCP's key page; fetched once and cached."""
+        """Fenris Creations' public key for this token (by its kid), from Fenris Creations' key page; fetched once and cached."""
         if self._jwks_client is None:
             self._jwks_client = PyJWKClient(self.JWKS_URL, cache_keys=True, timeout=15,
                                             headers={"User-Agent": f"EveFleetManagementTool/{__version__}"})
@@ -163,14 +163,14 @@ class AuthService:
 
     def verify_access_token(self, access_token: str) -> Dict:
         """
-        The token's claims, after checking it was signed by CCP (RS256, against CCP's
-        published keys), issued by CCP's login server, issued to this app, and not
-        expired (F7). Raises if any check fails, or if CCP's keys can't be fetched.
+        The token's claims, after checking it was signed by Fenris Creations (RS256, against Fenris Creations'
+        published keys), issued by Fenris Creations' login server, issued to this app, and not
+        expired (F7). Raises if any check fails, or if Fenris Creations' keys can't be fetched.
         """
         try:
             key = self.signing_key(access_token)
         except jwt.PyJWKClientError as e:
-            raise Exception(f"Couldn't fetch CCP's login keys to check the login; try again ({e}).") from e
+            raise Exception(f"Couldn't fetch Fenris Creations' login keys to check the login; try again ({e}).") from e
         return jwt.decode(access_token, key, algorithms=["RS256"], audience=self.client_id,
                           issuer=list(self.ISSUERS), leeway=60)
 
@@ -333,7 +333,7 @@ class AuthService:
         """
         Performs the complete OAuth2 PKCE flow:
         1. Starts the callback listener.
-        2. Opens the browser to the CCP authorization page.
+        2. Opens the browser to the EVE SSO login page.
         3. Waits for the callback.
         4. Exchanges the code for tokens.
 

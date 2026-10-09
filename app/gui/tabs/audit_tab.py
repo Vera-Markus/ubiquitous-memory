@@ -11,7 +11,8 @@ from app.gui import themed_dialogs as messagebox
 from app.gui.audit_presenter import (MISSING_ITEMS, Node, carried_by_item, character_icon, fuel_summary_node,
                                      packed_node, requirement_node, skills_note)
 from app import paths
-from app.asset_handling.corp_pull import load_corporations
+from app.asset_handling.corp_pull import load_corporations, load_memberships
+from app.services.fleet_ships import owner_choices
 from app.loaders.role_manager import fitting_in_use
 from app.services.implant_rules import is_implant_set, set_name
 from app.services.skill_requirements import SkillCheck
@@ -1600,15 +1601,27 @@ class AuditTab:
         if found is None:
             return
         plan, _ = found
-        if not plan.onboard and not plan.personal:
+        if not plan.onboard and not plan.personal and not plan.other:
             messagebox.showinfo("Onboard Ships", f"No new ships in {plan.system_name} to onboard.")
             return
-        self.onboard_dialog = OnboardDialog(self.app, plan, lambda choices, personal:
-                                            self._apply_onboarding(plan, choices, personal))
+        self.onboard_dialog = OnboardDialog(self.app, plan, lambda choices, personal, owner:
+                                            self._apply_onboarding(plan, choices, personal, owner),
+                                            self._corporation_owners())
 
-    def _apply_onboarding(self, plan, choices, personal):
-        assigned, marked = apply_onboarding(plan, choices, personal, self.app.ship_designations)
-        self._log(f"[INFO] Onboarded in {plan.system_name}: {assigned} ship(s) given a fitting and this Home, "
+    def _corporation_owners(self):
+        """The corporations Onboard can make the owner (1.7.2 plan, 31): as the Ships tab's Owner list offers."""
+        names = {str(k): v for k, v in (getattr(self.app.auth_service, "index", {}) or {}).items()}
+        try:
+            owners = owner_choices(names, load_corporations(paths.CORP_DIR), load_memberships(paths.CORP_DIR))
+        except Exception as e:
+            self._log(f"[WARNING] Couldn't list the corporations: {e}")
+            return []
+        return [o for o in owners if o["kind"] == "corporation"]
+
+    def _apply_onboarding(self, plan, choices, personal, owner=None):
+        assigned, marked = apply_onboarding(plan, choices, personal, self.app.ship_designations, owner=owner)
+        to = f", owned by {owner['name']}" if owner else ""
+        self._log(f"[INFO] Onboarded in {plan.system_name}: {assigned} ship(s) given a fitting and this Home{to}, "
                   f"{marked} marked {PERSONAL}.")
         self._handle_run_system_audit()
 

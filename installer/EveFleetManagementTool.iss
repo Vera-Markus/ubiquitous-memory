@@ -55,8 +55,16 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; Help > Check for Updates runs this installer with /SILENT /RELAUNCH=1 (app/services/app_updater.py):
+; the line above skips a silent install, so this one reopens the app after the update.
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: RelaunchAfterUpdate
 
 [Code]
+function RelaunchAfterUpdate: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;

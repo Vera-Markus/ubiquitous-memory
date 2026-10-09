@@ -6,7 +6,7 @@ Each character's skills, pulled with the assets for the skill check (ESI feature
 
 Saved as ESI sends it in data/skills/<id>.json. /skills can be behind for a character who
 hasn't logged in since a skill finished, so the levels used are the skills with any queue
-entry whose finish date has passed laid on top (CCP's description of the route).
+entry whose finish date has passed laid on top (Fenris Creations' description of the route).
 
 A login without both scopes is skipped without asking ESI: the pull says to log in again.
 """

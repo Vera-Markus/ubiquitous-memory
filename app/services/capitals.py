@@ -6,7 +6,7 @@ Black Ops (D8.12): Carriers, Command Carriers, Force Auxiliaries, Dreadnoughts, 
 Rorquals and Jump Freighters. Its hull is never priced on the market: it comes from contracts,
 alliance ones first, within jump range.
 
-Distances use CCP's data only (D8.8): light-years between `mapSolarSystems` coordinates, the
+Distances use Fenris Creations' data only (D8.8): light-years between `mapSolarSystems` coordinates, the
 hull's range at Jump Drive Calibration V (`jumpDriveRange` × 2), and jumps as the straight-line
 distance over the range, rounded up: an estimate (C1). Stations give their system from
 `staStations`; a structure only through the location cache (docking access).

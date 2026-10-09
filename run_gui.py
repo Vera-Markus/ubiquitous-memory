@@ -3,6 +3,7 @@ import tkinter as tk
 from app.gui.main_window import EVEFleetGUI
 from app.logging_config import setup_logging
 from app.paths import initialize_runtime_directories
+from app.restart import pid_to_wait_for, wait_for_exit
 
 if __name__ == "__main__":
     # The GUI mirrors its log lines to stdout. A redirected console (e.g. cp1252 on
@@ -10,6 +11,10 @@ if __name__ == "__main__":
     # The packaged build has no stdout at all.
     if sys.stdout is not None:
         sys.stdout.reconfigure(errors="replace")
+    # Restart Now (1.7.2 plan, 33.1): let the old copy close first, so a database update can be applied.
+    old_copy = pid_to_wait_for(sys.argv[1:])
+    if old_copy is not None:
+        wait_for_exit(old_copy)
     setup_logging()
     # Ensure all writable directories exist before initializing the GUI
     initialize_runtime_directories()

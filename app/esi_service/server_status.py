@@ -1,14 +1,14 @@
 """
-Tranquility's status, checked before the app calls CCP (ESI features plan, Phase 25).
+Tranquility's status, checked before the app calls Fenris Creations (ESI features plan, Phase 25).
 
 Two sources:
 - ESI's GET /status: players online, server version, start time, VIP mode. It's ESI
   itself, so when it doesn't answer, ESI is down for the app too.
-- CCP's status page (status.eveonline.com, Atlassian Statuspage): the state of each
+- Fenris Creations' status page (status.eveonline.com, Atlassian Statuspage): the state of each
   component (Tranquility, ESI, Login…), open incidents and scheduled maintenance.
 
 ServerStatus turns the latest readings into one of four states (D11.4) and answers
-"may the app call CCP now?" (D11.1, D11.9). The daily downtime window, 10:55–11:15 UTC,
+"may the app call Fenris Creations now?" (D11.1, D11.9). The daily downtime window, 10:55–11:15 UTC,
 blocks without calling; a good check from 11:10 lifts it early (D11.5).
 
 The fetch functions are module attributes so the GUI harnesses can replace them.
@@ -122,7 +122,7 @@ def read_page(body: dict) -> PageReading:
 
 
 def fetch_page() -> PageReading:
-    """CCP's status page summary: components, open incidents, scheduled maintenance."""
+    """Fenris Creations' status page summary: components, open incidents, scheduled maintenance."""
     try:
         r = httpx.get(STATUS_PAGE_SUMMARY, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT)
         r.raise_for_status()
@@ -265,7 +265,7 @@ class ServerStatus:
             return OFFLINE if self.window_blocks(now) else self.state(now)
 
     def locked(self, now: Optional[datetime] = None) -> bool:
-        """Outbound calls to CCP are off (D11.9, D11.14): down, unknown, VIP, ESI completely down, or the daily window."""
+        """Outbound calls to Fenris Creations are off (D11.9, D11.14): down, unknown, VIP, ESI completely down, or the daily window."""
         now = now or utc_now()
         with self._lock:
             if self.window_blocks(now):
@@ -286,31 +286,31 @@ class ServerStatus:
         now = now or utc_now()
         with self._lock:
             if self.window_blocks(now):
-                return "Tranquility's daily downtime (10:55–11:15 UTC). Calls to CCP resume after it."
+                return "Tranquility's daily downtime (10:55–11:15 UTC). Calls to Fenris Creations resume after it."
             if self.reading is None:
                 return ""
             state = self.state(now)
             incident = self.latest_incident()
             if self.held and state not in (OFFLINE, UNKNOWN):
                 problem = f" ({incident.title})" if incident else ""
-                return f"CCP's status page reports a problem{problem}: pulls are on hold until it's resolved."
+                return f"Fenris Creations' status page reports a problem{problem}: pulls are on hold until it's resolved."
             if state == UNKNOWN:
-                return "CCP's servers can't be reached. Check your internet connection."
+                return "Fenris Creations' servers can't be reached. Check your internet connection."
             if state == OFFLINE:
                 if incident:
                     return f"Tranquility is down: {incident.title}."
                 return "Tranquility isn't answering."
             if self.reading.vip:
-                return "Tranquility is in VIP mode: only CCP staff can log in."
+                return "Tranquility is in VIP mode: only Fenris Creations staff can log in."
             if self.page and self.page.ok and self.page.component("EVE Swagger Interface (ESI)") in _DOWN:
-                return "CCP reports ESI is down."
+                return "Fenris Creations reports ESI is down."
             if state == DEGRADED:
-                return "CCP reports ESI is degraded: some calls may fail."
+                return "Fenris Creations reports ESI is degraded: some calls may fail."
             return ""
 
     def allow(self, action: str = "", login: bool = False, now: Optional[datetime] = None) -> Tuple[bool, str]:
         """
-        May the app call CCP now? Returns (allowed, message). With login=True (Add
+        May the app call Fenris Creations now? Returns (allowed, message). With login=True (Add
         Character) the status page's Login component must be working too (C11.1).
         """
         now = now or utc_now()
@@ -318,7 +318,7 @@ class ServerStatus:
             if self.locked(now):
                 return False, self.reason(now)
             if login and self.page and self.page.ok and self.page.component("Login") in _DOWN:
-                return False, "CCP reports the login server is down."
+                return False, "Fenris Creations reports the login server is down."
             return True, self.reason(now)
 
     def latest_incident(self) -> Optional[Message]:
@@ -355,7 +355,7 @@ class ServerStatus:
                     lines.append(f"{'Incident' if m.kind == 'incident' else 'Maintenance'}: {m.title}{when}")
             if self.checked_at:
                 lines.append(f"Checked {self.checked_at.astimezone().strftime('%H:%M')}")
-            lines.append("Click to open CCP's status page.")
+            lines.append("Click to open Fenris Creations' status page.")
             return lines
 
     # --- the red dot (D11.7, D11.17) -----------------------------------------------------------

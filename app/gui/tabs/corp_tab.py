@@ -19,6 +19,7 @@ from app.asset_handling.corp_pull import load_corporations, load_memberships
 from app.gui import style as ui_style
 from app.gui import eft_presenter as eft
 from app.gui.audit_presenter import ICONS, Node, ship_node
+from app.gui.dialogs.onboard_ships_dialog import OnboardShipsDialog
 from app.gui.status_icons import StatusIcons
 from app.gui.type_ahead import TypeAhead
 from app.loaders.ship_designations import ANYWHERE, home_system, is_anywhere
@@ -26,9 +27,11 @@ from app.gui.toggle_switch import ToggleSwitch
 from app.models.audit_models import RequirementStatus
 from app.asset_handling.skill_pull import load_levels
 from app.services import esi_features
-from app.services.fleet_ships import bay_of, hangar_of, holders, ship_rows
+from app.services.fleet_ships import bay_of, hangar_of, holders, owner_choices, ship_rows
 from app.services.shopping_list_service import ShoppingListService, items_text
 from app.models.audit_models import ItemShortfall
+from app.services.audit.inventory import items_aboard
+from app.services.onboarding import onboard_ships
 from app.services.tracking import TrackingContext
 
 logger = logging.getLogger(__name__)
@@ -38,21 +41,28 @@ ASSIGNED_ONLY_SETTING = "ships_assigned_only"
 EXPECTED_SETTING = "ships_eft_expected"
 EFT_LEGEND = {False: "Green: in place · orange: in the wrong place · struck through: take it off",
               True: "Green: aboard · orange: aboard, in the wrong place · red: missing"}
+AS_FITTED_LEGEND = "No fitting assigned: the ship as it's fitted now"
 SHIPS_SHARE = 0.75          # the ship list's share of the tab's width, at first
-SHIP_COLUMNS = ("fitting", "home", "status", "owner")
+SHIP_COLUMNS = ("name", "fitting", "home", "status", "owner")
+# Column widths the user dragged (1.7.2 plan, 32.3): one set for every holder, kept across restarts.
+# The last column (Owner) isn't saved: it takes whatever room is left, down to LAST_COLUMN_MIN.
+COLUMN_WIDTHS_SETTING = "ships_column_widths"
+LAST_COLUMN_MIN = 80
 PERSONAL = "<Personal>"     # first in the Fitting list: the audit never sees the ship (S5)
 ANYWHERE_LABEL = "Anywhere"
 COPY_MISSING = "Copy Missing Items"
+ONBOARD_THESE = "Onboard These Ships…"
 STATUS_TEXT = {RequirementStatus.PASS: "Ready", RequirementStatus.WARN: "Ready, needs attention",
                RequirementStatus.FAIL: "Not ready"}
 
 
-def ship_label(row, nested: bool = False) -> str:
+def ship_label(row, nested: bool = False, with_name: bool = True) -> str:
     """'✅ Devoter "Old Faithful"'; a carried ship says where aboard: '⚪ Heron · ship maintenance bay'
-    under its carrier (nested), or "· ship maintenance bay of 'Big Brother'" when it isn't listed."""
+    under its carrier (nested), or "· ship maintenance bay of 'Big Brother'" when it isn't listed.
+    with_name=False leaves the custom name out: the ship list shows it in its own Name column (32.2)."""
     status = row.result.status if row.result is not None else None
     icon = ICONS[status] if status is not None else NO_FITTING
-    name = f'{row.hull} "{row.custom_name}"' if row.custom_name else row.hull
+    name = f'{row.hull} "{row.custom_name}"' if row.custom_name and with_name else row.hull
     aboard = ""
     if row.carrier_item_id is not None:
         aboard = bay_of(row.aboard) if nested else row.aboard.split(" / ")[-1]
@@ -106,6 +116,7 @@ class CorpTab:
         self._systems = {}              # solar system name -> ID, for the Home box
         self._system_names = {}         # ID -> name
         self._context = None
+        self.onboard_dialog = None      # Onboard These Ships (32.1), while open
         self._setup()
 
     def _log(self, message: str):
@@ -152,15 +163,22 @@ class CorpTab:
         tree_frame.pack(fill=tk.BOTH, expand=True)
         self.ship_tree = ttk.Treeview(tree_frame, columns=SHIP_COLUMNS, selectmode="extended")
         self.ship_tree.heading("#0", text="Ship", anchor=tk.W)
+        self.ship_tree.heading("name", text="Name", anchor=tk.W)
         self.ship_tree.heading("fitting", text="Fitting", anchor=tk.W)
         self.ship_tree.heading("home", text="Home", anchor=tk.W)
         self.ship_tree.heading("status", text="Status", anchor=tk.W)
         self.ship_tree.heading("owner", text="Owner", anchor=tk.W)
-        self.ship_tree.column("#0", width=300, stretch=True)
+        # Only the last column stretches: it gains the room when the window widens or another
+        # column narrows, and gives it back down to LAST_COLUMN_MIN (32.3).
+        self.ship_tree.column("#0", width=300, stretch=False)
+        self.ship_tree.column("name", width=160, stretch=False)
         self.ship_tree.column("fitting", width=160, stretch=False)
         self.ship_tree.column("home", width=100, stretch=False)
         self.ship_tree.column("status", width=140, stretch=False)
-        self.ship_tree.column("owner", width=140, stretch=False)
+        self.ship_tree.column("owner", width=140, stretch=True, minwidth=LAST_COLUMN_MIN)
+        self._widths_at_press = None
+        self.ship_tree.bind("<ButtonPress-1>", self._on_tree_press, add="+")
+        self.ship_tree.bind("<ButtonRelease-1>", self._on_tree_release, add="+")
         scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.ship_tree.yview)
         self.ship_tree.configure(yscrollcommand=scroll.set)
         self.ship_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -364,15 +382,8 @@ class CorpTab:
         if not self._systems:
             self._load_systems()
         self._holders = {h["label"]: h for h in holders(names, corporations)}
-        self._owners = dict(self._holders)
         # A character's corporation is an Owner choice even with no Director to pull its hangars.
-        pulled = {h["id"] for h in self._holders.values() if h["kind"] == "corporation"}
-        for cid, corp in sorted(load_memberships(paths.CORP_DIR).items(), key=lambda m: (m[1].get("name") or "").casefold()):
-            if cid in names and int(corp["corporation_id"]) not in pulled:
-                pulled.add(int(corp["corporation_id"]))
-                label = f"{corp['name']} (corporation)"
-                self._owners[label] = {"kind": "corporation", "id": int(corp["corporation_id"]),
-                                       "name": corp["name"], "label": label}
+        self._owners = {h["label"]: h for h in owner_choices(names, corporations, load_memberships(paths.CORP_DIR))}
         labels = list(self._holders)
         current = self.holder_combo.get()
         self.holder_combo["values"] = labels
@@ -406,9 +417,10 @@ class CorpTab:
         places, hangars, counts = {}, {}, {}
 
         def add(row, parent, nested):
-            item = self.ship_tree.status_icons.insert(parent, tk.END, text=ship_label(row, nested), open=True,
-                                                      tags=("lost",) if row.loss else (),
-                                                      values=(PERSONAL if row.personal else row.fit_name or "—",
+            item = self.ship_tree.status_icons.insert(parent, tk.END, text=ship_label(row, nested, with_name=False),
+                                                      open=True, tags=("lost",) if row.loss else (),
+                                                      values=(row.custom_name,
+                                                              PERSONAL if row.personal else row.fit_name or "—",
                                                               home_text(row, self._system_name), status_text(row),
                                                               owner_text(row)))
             self._rows[item] = row
@@ -429,7 +441,7 @@ class CorpTab:
             counts[hangars[hangar]] = counts.get(hangars[hangar], 0) + n
         for item, count in counts.items():
             self.ship_tree.item(item, text=counted(self.ship_tree.item(item, "text"), count))
-        ui_style.fit_columns(self.ship_tree, SHIP_COLUMNS)
+        self._apply_column_widths()
         if rows:
             self.lbl_ships_empty.place_forget()
         else:
@@ -446,6 +458,54 @@ class CorpTab:
             self.ship_tree.selection_set(reselect)
             self.ship_tree.see(reselect[0])
         self._on_selection()
+
+    # --- column widths (1.7.2 plan, 32.3) -----------------------------------------------------------
+
+    def _sized_columns(self):
+        """The columns whose widths are remembered: all but the last, which takes the slack."""
+        return ("#0",) + SHIP_COLUMNS[:-1]
+
+    def _apply_column_widths(self):
+        """The widths the user dragged, or (until they drag one) each column sized to what it shows."""
+        saved = ui_style.load_setting(paths.CONFIG_DIR, COLUMN_WIDTHS_SETTING)
+        if not isinstance(saved, dict) or not saved:
+            ui_style.fit_columns(self.ship_tree, SHIP_COLUMNS[:-1])
+            return
+        for column in self._sized_columns():
+            try:
+                width = int(saved.get(column, 0))
+            except (TypeError, ValueError):
+                continue
+            if width > 0:
+                self.ship_tree.column(column, width=width)
+
+    def column_widths(self) -> dict:
+        return {column: int(self.ship_tree.column(column, "width")) for column in self._sized_columns()}
+
+    def _on_tree_press(self, event):
+        self._widths_at_press = (self.column_widths() if self.ship_tree.identify_region(event.x, event.y) == "separator"
+                                 else None)
+
+    def _on_tree_release(self, event=None):
+        """A column edge was dragged: keep the last column at least LAST_COLUMN_MIN wide, then remember the widths."""
+        before, self._widths_at_press = self._widths_at_press, None
+        if before is None:
+            return
+        self.settle_column_widths(before)
+
+    def settle_column_widths(self, before: dict, available: int = None):
+        """
+        After a drag: if the remembered columns leave the last one less than LAST_COLUMN_MIN, the
+        column that grew gives the difference back (so its edge can still be reached). Saves the widths.
+        """
+        widths = self.column_widths()
+        available = available if available is not None else self.ship_tree.winfo_width()
+        excess = sum(widths.values()) + LAST_COLUMN_MIN - available
+        if excess > 0 and available > LAST_COLUMN_MIN:
+            grown = max(widths, key=lambda c: widths[c] - before.get(c, widths[c]))
+            widths[grown] = max(int(self.ship_tree.column(grown, "minwidth") or 20), widths[grown] - excess)
+            self.ship_tree.column(grown, width=widths[grown])
+        ui_style.save_setting(paths.CONFIG_DIR, COLUMN_WIDTHS_SETTING, widths)
 
     # --- selection, assigning ---------------------------------------------------------------------
 
@@ -568,6 +628,9 @@ class CorpTab:
         menu = self.ship_menu
         if menu.index(tk.END) is not None:
             menu.delete(0, tk.END)
+        if self._onboard_rows():
+            menu.add_command(label=ONBOARD_THESE, command=self._handle_onboard_these)
+            menu.add_separator()
         pilot = self._pilot_of(row)
         if esi_features.enabled("skills") and pilot is not None:
             menu.add_command(label=f"Can {pilot[1]} Fly This?", command=self._handle_can_fly)
@@ -586,6 +649,63 @@ class CorpTab:
         end = menu.index(tk.END)
         return [] if end is None else [menu.entrycget(i, "label") for i in range(end + 1)
                                        if menu.type(i) != "separator"]
+
+    # --- Onboard These Ships (1.7.2 plan, 32.1) ------------------------------------------------------
+
+    def _onboard_rows(self):
+        """The selected ships, when there are several and all of one hull (lost ships aside); else []."""
+        rows = [r for r in self._selected_rows() if not r.loss]
+        return rows if len(rows) > 1 and len({r.type_id for r in rows}) == 1 else []
+
+    def _handle_onboard_these(self):
+        rows = self._onboard_rows()
+        holder_label = self.holder_combo.get()
+        holder = self._holders.get(holder_label)
+        if not rows or holder is None:
+            return
+        hull = rows[0].hull
+        places = {r.location for r in rows}
+        where = places.pop() if len(places) == 1 else f"{len(places)} places"
+        summary = f"{len(rows)} × {hull} · {holder['name']} · {where}"
+        fittings = sorted((f for f in self.app.fitting_manager.list_fittings() if f.get("hull_type_id") == rows[0].type_id),
+                          key=lambda f: (f.get("fit_name") or "").casefold())
+        choices = {PERSONAL: None, **{f"{f.get('fit_name')} ({f['fit_uid']})": f["fit_uid"] for f in fittings}}
+        assigned = {r.fit_uid for r in rows}
+        if all(r.personal for r in rows):
+            fitting = PERSONAL
+        else:
+            fitting = next((label for label, uid in choices.items() if uid is not None and assigned == {uid}),
+                           next((label for label, uid in choices.items() if uid is not None), PERSONAL))
+        designated = [r for r in rows if r.fit_uid is not None or r.personal]
+        owners = {(r.owner["kind"], r.owner["id"]) for r in designated if r.owner}
+        owner = next((label for label, o in self._owners.items()
+                      if len(designated) == len(rows) and owners == {(o["kind"], o["id"])}), holder_label)
+        homes = {home_text(r, self._system_name).removeprefix("↩ ") for r in rows if r.fit_uid is not None}
+        systems = {r.system_id for r in rows}
+        if len(homes) == 1 and len(designated) == len(rows) and "—" not in homes:
+            home = homes.pop()
+        elif not designated and len(systems) == 1 and None not in systems:
+            home = self._system_name(systems.pop())
+        else:
+            home = ""
+        self.onboard_dialog = OnboardShipsDialog(
+            self.app, summary, choices, fitting, self._owners, owner, sorted(self._systems), home, ANYWHERE_LABEL,
+            lambda fit_uid, chosen_owner, home_name: self._apply_onboard_these(rows, holder, fit_uid, chosen_owner,
+                                                                               home_name))
+
+    def _apply_onboard_these(self, rows, holder, fit_uid, owner, home_name):
+        if home_name == ANYWHERE_LABEL:
+            home = ANYWHERE
+        elif home_name in self._systems:
+            home = {"system_id": self._systems[home_name]}
+        else:
+            home = None
+        count = onboard_ships(self.app.ship_designations, rows, fit_uid, holder, owner, home)
+        what = PERSONAL if fit_uid is None else next(
+            (f.get("fit_name") for f in self.app.fitting_manager.list_fittings() if f["fit_uid"] == fit_uid), str(fit_uid))
+        self._log(f"[INFO] Onboarded {count} {rows[0].hull}(s): {what}, owner {owner['name']}"
+                  + (f", Home {home_name}" if home and fit_uid is not None else "") + ".")
+        self._load_ships(keep=[r.item_id for r in rows])
 
     def _ship_asset(self, row):
         """The ship as it is (its fitted modules and bays), from its holder's assets."""
@@ -704,6 +824,9 @@ class CorpTab:
         self.lbl_eft_legend.config(text=EFT_LEGEND[expected])
         if row is None:
             lines = [("Select one ship on the left.", eft.EXTRA)]
+        elif row.fit_uid is None and not expected and not row.loss:
+            lines = self._as_fitted(row)       # 32.4: no fitting, so Current shows the ship as it stands
+            self.lbl_eft_legend.config(text=AS_FITTED_LEGEND)
         elif row.result is None:
             lines = [("No fitting assigned." if row.fit_uid is None else (row.note or "Not audited."), eft.EXTRA)]
         elif expected:
@@ -723,6 +846,13 @@ class CorpTab:
         for line, tag in lines:
             text.insert(tk.END, line + "\n", (tag,) if tag and tag != eft.EXTRA else ())
         text.configure(state=tk.DISABLED)
+
+    def _as_fitted(self, row):
+        """EFT lines for a ship with no fitting: what's aboard now, all green (1.7.2 plan, 32.4)."""
+        ship = self._ship_asset(row)
+        if ship is None:
+            return [("No fitting assigned, and the ship isn't in the last pull.", eft.EXTRA)]
+        return eft.fitted_lines(items_aboard(ship, self.app.audit_engine.rules), row.hull, row.custom_name)
 
     def _insert(self, node: Node, parent: str):
         item = self.audit_tree.status_icons.insert(parent, tk.END, text=node.text, tone=node.tone, open=node.open)

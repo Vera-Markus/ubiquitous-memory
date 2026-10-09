@@ -4,7 +4,7 @@ sequence (ESI features plan 25.4, decisions D11.12, D11.13, D11.15).
 
 1. First failure: the queue stops. A manual pull asks "Retry All?" (every character,
    including ones that succeeded); a background pull goes straight to step 2.
-2. Second failure: a 5-minute safe mode, reading CCP's status page every 30 seconds.
+2. Second failure: a 5-minute safe mode, reading Fenris Creations' status page every 30 seconds.
 3. After it: if the status page shows no error, the pull carries on from the character
    that failed. If it shows one, the pull is held (an outage, D11.8).
 4. The same character fails again: it's dropped, and the pull carries on with the next.
@@ -137,10 +137,10 @@ class PullSequence:
         h = self.hooks
         for second in range(SAFE_MODE_SECONDS):
             if second % PAGE_EVERY_SECONDS == 0 and h.page_has_error():
-                h.notify("CCP's status page reports a problem: pulls are on hold until Tranquility is back.")
+                h.notify("Fenris Creations' status page reports a problem: pulls are on hold until Tranquility is back.")
                 return False
             left = SAFE_MODE_SECONDS - second
-            h.notify(f"Safe mode: checking CCP's status page ({left // 60}:{left % 60:02d} left)")
+            h.notify(f"Safe mode: checking Fenris Creations' status page ({left // 60}:{left % 60:02d} left)")
             await h.sleep(1)
         h.notify("Safe mode over: trying again.")
         return True

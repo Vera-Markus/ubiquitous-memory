@@ -11,6 +11,11 @@ apply_onboarding / apply_adoption is called with the user's choices.
   owner, and the system as Home.
 - **Next** (first-time setup, D2): their hulls in the system with no fitting whose hull has no
   saved fitting at all (a mining fleet), offered as <Personal>.
+- **A corporation as owner** (1.7.2 plan, 31): the window can give every ship it onboards a
+  corporation as owner instead of its holder. Corporation ships never count for a character's
+  requirement, so doctrines don't limit the choice: each hull is offered every saved fitting
+  (`all_fittings`, the ones required here first), and hulls nothing here requires but that have a
+  saved fitting are offered too (`plan.other`, only while the corporation owner is on).
 - Ships carried inside another ship (an escape Astero in a bay) are left out of both: their
   carrier's bays account for them.
 - **Adopt** (established ships): their ships in the system with a fitting, whose Home is
@@ -52,6 +57,7 @@ class ShipInSystem:
 class OnboardShip(ShipInSystem):
     fittings: List[Tuple[int, str]] = field(default_factory=list)     # (fit_uid, name) required here for this hull
     previews: Dict[int, str] = field(default_factory=dict)            # fit_uid -> "Ready", "Not ready: 3 items missing"
+    all_fittings: List[Tuple[int, str]] = field(default_factory=list)  # every saved fitting of the hull, required first
 
     @property
     def default(self) -> str:
@@ -75,6 +81,7 @@ class SystemShips:
     onboard: List[OnboardShip] = field(default_factory=list)
     personal: List[ShipInSystem] = field(default_factory=list)
     adopt: List[AdoptShip] = field(default_factory=list)
+    other: List[OnboardShip] = field(default_factory=list)      # saved fittings, none required here: corporation owner only
 
 
 def _roles_of(doctrine_manager: Any, character_id: int) -> List[int]:
@@ -123,7 +130,9 @@ def plan_system(system_id: int, characters: Dict[int, str], tracking: Any, role_
     plan = SystemShips(system_id, sde.get_system_name(system_id) or str(system_id))
     designations = tracking.designations
     fittings = {f["fit_uid"]: f for f in fitting_manager.list_fittings()}
-    saved_hulls = {f.get("hull_type_id") for f in fittings.values()}
+
+    def by_name(uids):
+        return sorted(((uid, fittings[uid].get("fit_name", str(uid))) for uid in uids), key=lambda f: f[1].casefold())
     for character_id, character_name in characters.items():
         required = {fitting_in_use(req) for req, _ in _requirements(role_manager, doctrine_manager, character_id, system_id)}
         required = {uid for uid in required if uid in fittings}
@@ -137,12 +146,15 @@ def plan_system(system_id: int, characters: Dict[int, str], tracking: Any, role_
             if d is None:
                 if sighting.carrier_item_id is not None:
                     continue        # carried in another ship: its carrier's bays account for it, not onboarding
-                for_hull = sorted(((uid, fittings[uid].get("fit_name", str(uid))) for uid in required
-                                   if fittings[uid].get("hull_type_id") == sighting.type_id), key=lambda f: f[1].casefold())
-                if for_hull:
-                    plan.onboard.append(OnboardShip(**base, fittings=for_hull, previews={
-                        uid: _preview(tracking, engine, fitting_manager, sighting, fittings[uid]) for uid, _ in for_hull}))
-                elif sighting.type_id not in saved_hulls:
+                for_hull = by_name(uid for uid in required if fittings[uid].get("hull_type_id") == sighting.type_id)
+                others = by_name(uid for uid, f in fittings.items()
+                                 if f.get("hull_type_id") == sighting.type_id and uid not in required)
+                if for_hull or others:
+                    ship = OnboardShip(**base, fittings=for_hull, all_fittings=for_hull + others, previews={
+                        uid: _preview(tracking, engine, fitting_manager, sighting, fittings[uid])
+                        for uid, _ in for_hull + others})
+                    (plan.onboard if for_hull else plan.other).append(ship)
+                else:
                     plan.personal.append(ShipInSystem(**base))
                 continue
             if d.get("personal") or d.get("fit_uid") is None or is_anywhere(d.get("home")):
@@ -156,7 +168,7 @@ def plan_system(system_id: int, characters: Dict[int, str], tracking: Any, role_
                 **base, fit_uid=d["fit_uid"], fit_name=fittings.get(d["fit_uid"], {}).get("fit_name", str(d["fit_uid"])),
                 home=home, home_name=sde.get_system_name(home_system(home)) if home else "",
                 required=d["fit_uid"] in required))
-    for rows in (plan.onboard, plan.personal, plan.adopt):
+    for rows in (plan.onboard, plan.personal, plan.adopt, plan.other):
         rows.sort(key=lambda s: (s.character_name.casefold(), s.hull.casefold(), s.custom_name.casefold(), s.item_id))
     return plan
 
@@ -191,32 +203,59 @@ def adoption_warnings(plan: SystemShips, chosen: Iterable[int], tracking: Any, r
 
 
 def apply_onboarding(plan: SystemShips, choices: Dict[int, str], personal: Iterable[int], designations: Any,
-                     when: Optional[str] = None) -> Tuple[int, int]:
+                     when: Optional[str] = None, owner: Optional[Dict[str, Any]] = None) -> Tuple[int, int]:
     """
     choices: item ID -> the fitting name chosen, SKIP or PERSONAL. personal: item IDs from the
-    Next page to mark <Personal>. Returns (ships given a fitting, ships marked Personal).
+    Next page to mark <Personal>. owner: a corporation ({kind, id}) every ship onboarded here
+    gets instead of its holder; then any saved fitting of the hull can be chosen, and
+    plan.other's ships are onboarded too. Returns (ships given a fitting, ships marked Personal).
     """
     when = when or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    owner = {"kind": owner["kind"], "id": int(owner["id"])} if owner else None
     assigned = marked = 0
-    for ship in plan.onboard:
+    for ship in plan.onboard + (plan.other if owner else []):
         choice = choices.get(ship.item_id) or ship.default
-        owner = {"kind": "character", "id": ship.character_id}
+        ship_owner = owner or {"kind": "character", "id": ship.character_id}
         if choice == PERSONAL:
-            designations.mark_personal(ship.item_id, ship.type_id, owner, ship.custom_name, when)
+            designations.mark_personal(ship.item_id, ship.type_id, ship_owner, ship.custom_name, when)
             marked += 1
             continue
-        fit_uid = next((uid for uid, name in ship.fittings if name == choice), None)
+        fit_uid = next((uid for uid, name in (ship.all_fittings if owner else ship.fittings) if name == choice), None)
         if fit_uid is not None:
-            designations.assign(ship.item_id, ship.type_id, fit_uid, owner, ship.custom_name, when,
+            designations.assign(ship.item_id, ship.type_id, fit_uid, ship_owner, ship.custom_name, when,
                                 system_id=plan.system_id)
             assigned += 1
     chosen = set(personal)
     for ship in plan.personal:
         if ship.item_id in chosen:
-            designations.mark_personal(ship.item_id, ship.type_id, {"kind": "character", "id": ship.character_id},
-                                       ship.custom_name, when)
+            designations.mark_personal(ship.item_id, ship.type_id,
+                                       owner or {"kind": "character", "id": ship.character_id}, ship.custom_name, when)
             marked += 1
     return assigned, marked
+
+
+def onboard_ships(designations: Any, ships: Iterable[Any], fit_uid: Optional[int], holder: Dict[str, Any],
+                  owner: Optional[Dict[str, Any]], home: Optional[Dict[str, Any]], when: Optional[str] = None) -> int:
+    """
+    The Ships tab's Onboard These Ships (1.7.2 plan, 32.1): several ships of one hull get one
+    fitting (None: <Personal>), one owner and one Home in a single step, no doctrine needed.
+    ships: rows with item_id, type_id, custom_name and system_id. home None leaves each ship
+    its Home, or its own system when it has none (H2). Returns how many ships were onboarded.
+    """
+    when = when or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    ships = list(ships)
+    for ship in ships:
+        if fit_uid is None:
+            designations.mark_personal(ship.item_id, ship.type_id, holder, ship.custom_name, when)
+        else:
+            designations.assign(ship.item_id, ship.type_id, fit_uid, holder, ship.custom_name, when,
+                                system_id=ship.system_id)
+    ids = [ship.item_id for ship in ships]
+    if owner:
+        designations.set_owner(ids, owner)
+    if home and fit_uid is not None:
+        designations.set_home(ids, home)
+    return len(ships)
 
 
 def apply_adoption(plan: SystemShips, chosen: Iterable[int], designations: Any) -> int:

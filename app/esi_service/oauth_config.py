@@ -7,7 +7,7 @@ from typing import List
 
 from app.esi_service import scopes
 
-# CCP Developer Portal Configuration
+# EVE developer portal (developers.eveonline.com) configuration
 CLIENT_ID = "ce1794f8622a499fa9016460dfbd040a"
 REDIRECT_URI = "http://localhost:8080/"
 

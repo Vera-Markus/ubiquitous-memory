@@ -109,6 +109,17 @@ def current_lines(result: ShipRequirementResult, hull: str, fit_name: str) -> Li
     return _layout(f"[{hull}, {custom}]", sections)
 
 
+def fitted_lines(items, hull: str, custom_name: str = "") -> List[Line]:
+    """
+    A ship with no fitting assigned (1.7.2 plan, 32.4): what's aboard as it stands, every line
+    green. items are the audit's AboardItems (location, type_id, name, quantity).
+    """
+    sections: Dict[str, List[Line]] = defaultdict(list)
+    for item in _merged([EftItem(i.location, i.type_id, i.type_id, i.name, i.quantity) for i in items]):
+        sections[item.location] += _lines(item.location, item.name, item.quantity, OK)
+    return _layout(f"[{hull}, {custom_name or hull}]", sections)
+
+
 def expected_lines(result: ShipRequirementResult, hull: str, fit_name: str) -> List[Line]:
     """What the fitting says, marked against what's aboard."""
     actual_left = Counter()

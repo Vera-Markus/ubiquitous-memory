@@ -7,7 +7,7 @@ logger = logging.getLogger("CallbackListener")
 
 class AuthCallbackListener:
     """
-    A lightweight aiohttp server that listens for CCP OAuth2 redirects.
+    A lightweight aiohttp server that listens for EVE SSO redirects.
     """
     def __init__(self, host: str = "localhost", port: int = 8080):
         self.host = host
@@ -25,7 +25,7 @@ class AuthCallbackListener:
 
     async def handle_callback(self, request: web.Request) -> web.Response:
         """
-        Handles the incoming redirect from CCP.
+        Handles the incoming redirect from Fenris Creations.
         Expected query params: code, state
         """
         logger.info(f"Received redirect request: {request.query}")

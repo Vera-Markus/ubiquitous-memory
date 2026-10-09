@@ -4,7 +4,7 @@ The Tranquility status icon on the right of the tab row (ESI features plan 25.3)
 A lamp in the theme's status colours (D11.4): green online, amber degraded (VIP or ESI
 trouble), red offline (the daily window too), grey unknown. A small red dot on its
 corner means the status page has something new (D11.7). Hovering shows the details;
-clicking opens CCP's status page and clears the dot (D11.17).
+clicking opens Fenris Creations' status page and clears the dot (D11.17).
 """
 import tkinter as tk
 import webbrowser
