@@ -12,6 +12,12 @@ A Windows desktop tool for fleet organisers in EVE Online. Build a library of fi
 
 **Help → User Guide** (F1) explains the workflows and how the tabs connect.
 
+## What's new in 1.7.3-rc7.3
+
+- **Ships tab:** the **Ships of** list offers every linked character's corporation, not only the ones a Director pulls. A corporation's hangars show once a linked Director pulls them.
+
+No new permissions: install over 1.7.2, or use **Help ▸ Check for Updates…**.
+
 ## What's new in 1.7.2-rc7.2
 
 - **Updates from inside the app:** **Help ▸ Check for Updates…** looks for a newer release here on GitHub. With the installed version, **Update** downloads the new installer, checks it against the release's SHA256SUMS, installs it and reopens the app; your characters, library and settings are kept. The portable zip and running from source get a link to the release page instead.
@@ -158,7 +164,7 @@ Download from the [Releases](../../releases) page. Each release has:
 In PowerShell, in the folder you downloaded to:
 
 ```powershell
-Get-FileHash .\EveFleetManagementTool-1.7.2-setup.exe
+Get-FileHash .\EveFleetManagementTool-1.7.3-setup.exe
 ```
 
 The hash it prints must match the line for that file in `SHA256SUMS.txt` (the case of the letters doesn't matter).

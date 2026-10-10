@@ -2,8 +2,8 @@
 Ships tab (tracked items plan, Phase 16; renamed from Corp Ships in UI thoughts plan 18.1).
 
 Left: every ship of one holder, grouped by where it is. A holder is a linked character,
-or a corporation a linked Director pulled with full read access, which acts like a
-character. Right: give the selected ships a fitting (their designation), and see how the
+or a linked character's corporation, which acts like a character (its hangars show
+once a linked Director pulls them). Right: give the selected ships a fitting (their designation), and see how the
 selected ship audits against it. Designations are kept by item ID, so they follow a ship
 through contracts. The data is read again each time the tab is opened (after Pull All,
 for example).
@@ -27,7 +27,7 @@ from app.gui.toggle_switch import ToggleSwitch
 from app.models.audit_models import RequirementStatus
 from app.asset_handling.skill_pull import load_levels
 from app.services import esi_features
-from app.services.fleet_ships import bay_of, hangar_of, holders, owner_choices, ship_rows
+from app.services.fleet_ships import bay_of, hangar_of, owner_choices, ship_rows
 from app.services.shopping_list_service import ShoppingListService, items_text
 from app.models.audit_models import ItemShortfall
 from app.services.audit.inventory import items_aboard
@@ -131,7 +131,7 @@ class CorpTab:
         self.holder_combo = ttk.Combobox(top, state="readonly", width=40)
         self.holder_combo.pack(side=tk.LEFT, padx=5)
         self.holder_combo.bind("<<ComboboxSelected>>", lambda e: self._load_view())
-        ttk.Label(top, text="A corporation is listed when a linked Director can read its hangars.",
+        ttk.Label(top, text="Each linked character's corporation is listed; its hangars show once a linked Director pulls them.",
                   style=ui_style.HINT_LABEL).pack(side=tk.LEFT, padx=15)
 
         # Ships, or the holder's clones and implants: two tabs, as By Doctrine and By System are.
@@ -381,9 +381,10 @@ class CorpTab:
             self._log(f"[WARNING] The Ships tab couldn't read the asset data: {e}")
         if not self._systems:
             self._load_systems()
-        self._holders = {h["label"]: h for h in holders(names, corporations)}
-        # A character's corporation is an Owner choice even with no Director to pull its hangars.
+        # Every linked character's corporation is listed (and an Owner choice) even with no Director
+        # to pull its hangars: such a corporation shows only the ships the tool already knows of.
         self._owners = {h["label"]: h for h in owner_choices(names, corporations, load_memberships(paths.CORP_DIR))}
+        self._holders = dict(self._owners)
         labels = list(self._holders)
         current = self.holder_combo.get()
         self.holder_combo["values"] = labels
