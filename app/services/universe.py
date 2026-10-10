@@ -17,11 +17,14 @@ from typing import Any, Dict, Iterable, List, Optional
 SHIP_CATEGORY = 6
 CAPSULE_GROUP = 29
 OFFICE_TYPE = 27            # a corporation office: corp hangar items sit in it
+# Cargo, secure (station containers too), audit log secure and freight containers (1.7.4)
+CONTAINER_GROUPS = frozenset({12, 340, 448, 649})
 
 FLAG_TEXT = {
     "Hangar": "hangar", "CorpDeliveries": "deliveries", "Deliveries": "deliveries", "AssetSafety": "asset safety",
     "ShipHangar": "ship maintenance bay", "FleetHangar": "fleet hangar", "Cargo": "cargo", "DroneBay": "drone bay",
     "FighterBay": "fighter bay", "Impounded": "impounded", "FrigateEscapeBay": "escape bay",
+    "SubSystemBay": "subsystem bay",
 }
 CONTENTS_FLAGS = ("AutoFit", "Unlocked", "Locked")      # inside a container: just "in '<container>'"
 
@@ -149,6 +152,14 @@ class Universe:
     def ships_held_by(self, holder: Dict[str, Any]) -> List[Sighting]:
         """Every assembled ship one holder has, wherever it is (aboard others too); by item ID."""
         return sorted((s for s in self._items.values() if s.holder == holder and self.is_ship(s)),
+                      key=lambda s: s.item_id)
+
+    def is_container(self, sighting: Sighting) -> bool:
+        return sighting.assembled and self.sde.get_type_group(sighting.type_id) in CONTAINER_GROUPS
+
+    def containers_held_by(self, holder: Dict[str, Any]) -> List[Sighting]:
+        """Every assembled container one holder has, wherever it is; by item ID (1.7.4)."""
+        return sorted((s for s in self._items.values() if s.holder == holder and self.is_container(s)),
                       key=lambda s: s.item_id)
 
     def items(self) -> List[Sighting]:

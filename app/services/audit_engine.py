@@ -33,10 +33,10 @@ from app.models.audit_models import (AuditResult, EftItem, ItemShortfall, Packed
 from app.services.audit.bays import BayContext, escape_covered_carriers, evaluate_bays
 from app.services.audit.carried import Expected, check_carried_ships, pooled
 from app.services.audit.configuration import evaluate_configuration, strict_locations
-from app.services.audit.expectations import FIGHTER_TUBES, Expectations, build_expectations
+from app.services.audit.expectations import FIGHTER_TUBES, ExpectedItem, Expectations, build_expectations
 from app.models.bay_registry import BAYS, CATEGORY_SHIP
 from app.services.audit.homes import DEPLOYED, HOME, IN_SYSTEM, Placed, share_out
-from app.services.audit.inventory import evaluate_inventory, items_aboard
+from app.services.audit.inventory import AboardItem, evaluate_inventory, items_aboard
 from app.services.audit.ranking import listing_order, requirement_status, ship_status
 from app.services.implant_audit import ImplantNeed, audit_implants
 from app.services.implant_rules import is_implant_set
@@ -508,6 +508,39 @@ class AuditEngine:
         """One ship against one fitting: both questions and the bays (the Ships tab, plan 16.2)."""
         return self._evaluate_ship(ship, build_expectations(fitting, self.rules.squadron_size), fitting, context)
 
+    def audit_container(self, item_id: int, name: str, custom_name: str, location_id: Optional[int],
+                        aboard: List[AboardItem], fitting: Dict[str, Any]) -> ShipRequirementResult:
+        """
+        A container against a fitting (1.7.4): a container is just cargo, so everything the fitting
+        lists (modules, charges, drones; not the hull) is expected in it as one pool.
+        """
+        expectations: Expectations = {"cargo": {}}
+        cargo = expectations["cargo"]
+        for items in build_expectations(fitting).values():
+            for item in items.values():
+                previous = cargo.get(item.type_id)
+                cargo[item.type_id] = ExpectedItem(item.type_id, item.name,
+                                                   item.quantity + (previous.quantity if previous else 0))
+        inventory = evaluate_inventory(expectations, aboard, self.rules)
+        result = ShipRequirementResult(
+            ship_name=name,
+            status=RequirementStatus.PASS,
+            custom_name=custom_name,
+            unexpected_items=[n for _, _, n, _ in inventory.unexpected],
+            ship_item_id=item_id,
+            location_id=location_id,
+            shortfalls=inventory.shortfalls,
+            substitutions=inventory.substitutions,
+            contents=[EftItem(i.location, i.type_id, self.rules.equivalence_key(i.type_id), i.name, i.quantity,
+                              i.loaded) for i in aboard],
+            expected=[EftItem("cargo", item.type_id, self.rules.equivalence_key(item.type_id), item.name, item.quantity)
+                      for item in cargo.values()],
+            unexpected_aboard=[EftItem(location, type_id, self.rules.equivalence_key(type_id), n, quantity)
+                               for location, type_id, n, quantity in inventory.unexpected],
+        )
+        result.status = ship_status(result)
+        return result
+
     def _evaluate_ship(self, ship: ShipAsset, expectations: Expectations, fitting: Optional[Dict[str, Any]] = None,
                        context: Optional[BayContext] = None) -> ShipRequirementResult:
         aboard = items_aboard(ship, self.rules, split_tubes=FIGHTER_TUBES in expectations)
@@ -529,12 +562,13 @@ class AuditEngine:
             refit_moves=moves,
             substitutions=inventory.substitutions,
             bay_results=evaluate_bays(ship, fitting or {}, inventory, moves, context or BayContext(), self.rules),
-            contents=[EftItem(i.location, i.type_id, self.rules.equivalence_key(i.type_id), i.name, i.quantity)
-                      for i in aboard],
+            contents=[EftItem(i.location, i.type_id, self.rules.equivalence_key(i.type_id), i.name, i.quantity,
+                              i.loaded) for i in aboard],
             expected=[EftItem(location, item.type_id, self.rules.equivalence_key(item.type_id), item.name, item.quantity)
                       for location, items in expectations.items() for item in items.values()],
             unexpected_aboard=[EftItem(location, type_id, self.rules.equivalence_key(type_id), name, quantity)
                                for location, type_id, name, quantity in inventory.unexpected],
+            unverified=ship.asset.manual_at,
         )
         result.status = ship_status(result)
         return result

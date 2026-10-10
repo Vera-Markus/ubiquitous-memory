@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from app.models.audit_models import ShipRequirementResult
 from app.services.audit.bays import BayContext
+from app.services.audit.inventory import items_in_container
 
 
 @dataclass
@@ -35,6 +36,7 @@ class ShipRow:
     home: Optional[Dict[str, Any]] = None       # {"system_id"} or {"anywhere": True}; None: no Home (H1)
     personal: bool = False                      # <Personal>: never audited (S5)
     loss: Optional[Dict[str, Any]] = None       # a lost ship's row (ESI features plan 30.3): {state, date, killmail_id}
+    unverified: Optional[str] = None            # contents pasted from the game (1.7.4): when, until the next pull
 
 
 def hangar_of(aboard: str) -> str:
@@ -88,6 +90,59 @@ def holder_name(holder: Optional[Dict[str, Any]], names: Dict[tuple, str]) -> st
     return names.get((holder.get("kind"), int(holder.get("id") or 0))) or f"{holder.get('kind', '')} {holder.get('id')}"
 
 
+def _set_owner(row: ShipRow, designations: Any, here: Dict[str, Any], names: Dict[tuple, str]) -> None:
+    """The designated item's owner (the holder until changed) and whether someone else holds it."""
+    owner = designations.owner(row.item_id) or here
+    row.owner = {"kind": owner.get("kind"), "id": int(owner.get("id") or 0)}
+    row.owner_name = holder_name(row.owner, names)
+    row.away_from_owner = row.owner != here
+
+
+def _row_for(sighting: Any, sde: Any) -> ShipRow:
+    return ShipRow(item_id=sighting.item_id, type_id=sighting.type_id, hull=sde.get_type_name(sighting.type_id),
+                   custom_name=sighting.custom_name, location_id=sighting.root_location_id,
+                   system_id=sighting.system_id,
+                   location=sde.location_label(sighting.root_location_id)
+                   + (" (in space)" if sde.is_solar_system(sighting.root_location_id) else ""),
+                   aboard=sighting.aboard,
+                   carrier_item_id=sighting.carrier_item_id)
+
+
+def container_rows(context: Any, holder: Dict[str, Any], designations: Any, fitting_manager: Any,
+                   engine: Any, names: Optional[Dict[tuple, str]] = None) -> List[ShipRow]:
+    """
+    Every assembled container the holder has (1.7.4), as rows like ships': hull is the container
+    type. One given a fitting is audited as cargo: everything in it is one pool, packaged or not.
+    """
+    sde = context.sde
+    names = names or {}
+    here = {"kind": holder["kind"], "id": int(holder["id"])}
+    rows = []
+    for sighting in context.universe.containers_held_by(here):
+        row = _row_for(sighting, sde)
+        fit_uid = designations.fit_uid(sighting.item_id) if designations is not None else None
+        if fit_uid is not None:
+            _set_owner(row, designations, here, names)
+            fitting = fitting_manager.get_fitting(fit_uid)
+            row.fit_uid = fit_uid
+            row.home = designations.home(sighting.item_id)
+            row.fit_name = (fitting or {}).get("fit_name", f"fitting {fit_uid}")
+            if fitting is None:
+                row.note = "Its fitting no longer exists"
+            else:
+                row.result = engine.audit_container(sighting.item_id, row.hull, row.custom_name,
+                                                    sighting.root_location_id,
+                                                    container_items(context, sighting, engine.rules), fitting)
+        rows.append(row)
+    rows.sort(key=lambda r: (r.location.casefold(), r.hull.casefold(), (r.custom_name or "").casefold(), r.item_id))
+    return rows
+
+
+def container_items(context: Any, sighting: Any, rules: Any) -> list:
+    """What's in a container, one cargo stack per type (AboardItems)."""
+    return items_in_container(context.contents_of(sighting), rules, context.sde.get_type_name)
+
+
 def ship_rows(context: Any, holder: Dict[str, Any], designations: Any, fitting_manager: Any,
               engine: Any, names: Optional[Dict[tuple, str]] = None) -> List[ShipRow]:
     """
@@ -99,27 +154,16 @@ def ship_rows(context: Any, holder: Dict[str, Any], designations: Any, fitting_m
     here = {"kind": holder["kind"], "id": int(holder["id"])}
     rows = []
     for sighting in context.universe.ships_held_by({"kind": holder["kind"], "id": int(holder["id"])}):
-        row = ShipRow(item_id=sighting.item_id, type_id=sighting.type_id, hull=sde.get_type_name(sighting.type_id),
-                      custom_name=sighting.custom_name, location_id=sighting.root_location_id,
-                      system_id=sighting.system_id,
-                      location=sde.location_label(sighting.root_location_id)
-                      + (" (in space)" if sde.is_solar_system(sighting.root_location_id) else ""),
-                      aboard=sighting.aboard,
-                      carrier_item_id=sighting.carrier_item_id)
+        row = _row_for(sighting, sde)
+        row.unverified = getattr(context, "manual_at", {}).get(sighting.item_id)
         if designations is not None and designations.is_personal(sighting.item_id):
             row.personal = True
-            owner = designations.owner(sighting.item_id) or here
-            row.owner = {"kind": owner.get("kind"), "id": int(owner.get("id") or 0)}
-            row.owner_name = holder_name(row.owner, names)
-            row.away_from_owner = row.owner != here
+            _set_owner(row, designations, here, names)
             rows.append(row)
             continue
         fit_uid = designations.fit_uid(sighting.item_id) if designations is not None else None
         if fit_uid is not None:
-            owner = designations.owner(sighting.item_id) or here
-            row.owner = {"kind": owner.get("kind"), "id": int(owner.get("id") or 0)}
-            row.owner_name = holder_name(row.owner, names)
-            row.away_from_owner = row.owner != here
+            _set_owner(row, designations, here, names)
             fitting = fitting_manager.get_fitting(fit_uid)
             row.fit_uid = fit_uid
             row.home = designations.home(sighting.item_id)

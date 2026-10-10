@@ -7,6 +7,7 @@ from app import paths
 from app.models.asset_models import AuditSnapshot
 from app.loaders.doctrine_manager import DoctrineManager
 from app.loaders.hierarchy_builder import HierarchyBuilder
+from app.loaders.manual_contents import SHIP_CATEGORY, with_manual_contents
 from app.loaders.fitting_loader import EVEdbLoader
 from app.asset_handling.mutated_items import MutatedItems
 
@@ -48,6 +49,9 @@ class AuditCollectionService:
         assets_path = self.generated_dir / "all_assets.json"
         with open(assets_path, 'r') as f:
             all_raw_assets = json.load(f)
+        # Ships whose contents were pasted from the game since the last pull (1.7.4)
+        all_raw_assets = with_manual_contents(all_raw_assets, self.generated_dir,
+                                              lambda t: self.sde_loader.get_type_category(t) == SHIP_CATEGORY)
         
         # Filter assets to only those belonging to this character_id
         raw_assets = [a for a in all_raw_assets if a.get('character_id') == character_id]

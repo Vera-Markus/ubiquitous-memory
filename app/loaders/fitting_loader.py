@@ -305,13 +305,29 @@ class FitParser:
             "unresolved": []
         }
 
+        # Charges loaded in modules ("Cruise Missile Launcher II, Scourge Fury Cruise Missile"): charge
+        # type -> [name, modules loaded with it]. They're expected in the cargo (1.7.4), at least one
+        # per module, more when the cargo section lists more.
+        loaded: Dict[int, list] = {}
+
         for i, section in enumerate(sections):
             is_final_section = (i == len(sections) - 1)
 
             items = []  # (name, quantity, type_id, natural category)
             for item_line in section:
+                if is_empty_slot(item_line):
+                    continue
                 name, qty = parse_item_line(item_line)
                 type_id = self.sde.get_typeid_by_name(name)
+                if not type_id and ", " in name:
+                    module, charge = (part.strip() for part in name.rsplit(", ", 1))
+                    module_id, charge_id = self.sde.get_typeid_by_name(module), self.sde.get_typeid_by_name(charge)
+                    if module_id:
+                        name, type_id = module, module_id
+                        if charge_id:
+                            loaded.setdefault(charge_id, [charge, 0])[1] += qty
+                        else:
+                            result["unresolved"].append(charge)
                 if not type_id:
                     result["unresolved"].append(name)
                     continue
@@ -328,6 +344,10 @@ class FitParser:
                 if tid_str not in target_dict:
                     target_dict[tid_str] = {"name": name, "quantity": 0}
                 target_dict[tid_str]["quantity"] += qty
+
+        for charge_id, (charge, modules) in loaded.items():
+            entry = result["cargo"].setdefault(str(charge_id), {"name": charge, "quantity": 0})
+            entry["quantity"] = max(entry["quantity"], modules)
 
         # Clean up empty dicts
         for key in ["low", "mid", "high", "rigs", "subsystem", "service", "drones", "fighters", "cargo"]:
@@ -391,8 +411,15 @@ class FitParser:
         return self.sde.get_type_category(type_id) == FIGHTER_CATEGORY_ID
 
 
+def is_empty_slot(line: str) -> bool:
+    """EFT's placeholder for an unfitted slot: "[Empty High slot]"."""
+    return bool(re.fullmatch(r"\[Empty [^\]]*\]", line.strip(), flags=re.IGNORECASE))
+
+
 def parse_item_line(line: str) -> Tuple[str, int]:
-    """Splits an EFT item line into (name, quantity): "Hobgoblin II x5" -> ("Hobgoblin II", 5)."""
+    """Splits an EFT item line into (name, quantity): "Hobgoblin II x5" -> ("Hobgoblin II", 5).
+    An offline module's "/OFFLINE" mark is dropped."""
+    line = re.sub(r"\s*/offline\s*$", "", line.strip(), flags=re.IGNORECASE)
     match = re.match(r"(.+?)(?:\s+x(\d+))?$", line.strip())
     if match:
         name = match.group(1).strip()

@@ -155,6 +155,25 @@ def fit_columns(tree: ttk.Treeview, columns, padding: int = 24, most: int = 280)
         tree.column(column, width=min(widest + padding, most))
 
 
+def tree_text_width(tree: ttk.Treeview, image: int = 0, padding: int = 16) -> int:
+    """
+    The pixels the tree column (#0) needs for its widest line, indent and icon included (1.7.4).
+    Setting #0 at least this wide, with stretch off, lets a horizontal scrollbar reach it all.
+    """
+    style = ttk.Style(tree)
+    body = _font(style.lookup("Treeview", "font"))
+    try:
+        indent = int(style.lookup("Treeview", "indent") or 20)
+    except (TypeError, ValueError):
+        indent = 20
+    widest, pending = 0, [(row, 1) for row in tree.get_children()]
+    while pending:
+        row, depth = pending.pop()
+        widest = max(widest, depth * indent + image + body.measure(tree.item(row, "text")))
+        pending.extend((child, depth + 1) for child in tree.get_children(row))
+    return widest + padding
+
+
 def _font(name) -> tkfont.Font:
     """A style's font: a named font, a font description, or (unset) Tk's default."""
     try:

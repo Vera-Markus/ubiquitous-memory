@@ -380,7 +380,11 @@ class FittingsTab:
         designations = getattr(self.app, "ship_designations", None)
         designated = [d for d in (designations.designations.values() if designations else []) if d["fit_uid"] == fit_uid]
         if designated:
-            message += f"\n\n{len(designated)} ship(s) assigned this fitting in the Ships tab will lose it."
+            message += f"\n\n{len(designated)} ship(s) assigned this fitting in the Assets tab will lose it."
+        containers = getattr(self.app, "container_designations", None)
+        in_containers = [d for d in (containers.designations.values() if containers else []) if d["fit_uid"] == fit_uid]
+        if in_containers:
+            message += f"\n\n{len(in_containers)} container(s) assigned this fitting in the Assets tab will lose it."
         confirm = messagebox.askyesno("Confirm Deletion", message)
 
         if confirm:
@@ -388,8 +392,9 @@ class FittingsTab:
                 success = self.fitting_manager.delete_fitting(fit_uid)
                 if success:
                     removed = self.role_manager.remove_requirements_for_fittings([fit_uid])
-                    if designations is not None:
-                        designations.prune(f["fit_uid"] for f in self.fitting_manager.list_fittings())
+                    for kept in (designations, containers):
+                        if kept is not None:
+                            kept.prune(f["fit_uid"] for f in self.fitting_manager.list_fittings())
                     if removed or replacing:
                         self._log(f"[INFO] Removed {removed} requirement(s) and {len(replacing)} replacement(s) "
                                   f"for {fitting_name}")

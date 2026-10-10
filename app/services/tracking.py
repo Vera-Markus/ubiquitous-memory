@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.loaders.hierarchy_builder import HierarchyBuilder
+from app.loaders.manual_contents import SHIP_CATEGORY, with_manual_contents
 from app.models.asset_models import CarriedShip, ShipAsset
 from app.services.audit_collection_service import annotate_mutated
 from app.services.universe import Sighting, Universe
@@ -30,8 +31,12 @@ class TrackingContext:
         self.generated_dir = Path(generated_dir)
         self._holder_assets = holder_assets
         self._built: Dict[Holder, Tuple[Dict[int, ShipAsset], List[CarriedShip]]] = {}
+        self._inside: Dict[Holder, Dict[int, List[dict]]] = {}      # holder -> location item ID -> its items
         self.character_names = {str(k): v for k, v in (character_names or {}).items()}
         self.now = now or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        # Ships whose contents were pasted from the game (1.7.4): item ID -> when
+        self.manual_at: Dict[int, str] = {a["item_id"]: a["manual_at"] for assets in holder_assets.values()
+                                          for a in assets if a.get("manual_at")}
 
     @classmethod
     def load(cls, generated_dir: Path, corporations: List[dict], sde: Any, designations: Any = None,
@@ -40,6 +45,13 @@ class TrackingContext:
         generated_dir = Path(generated_dir)
         path = generated_dir / "all_assets.json"
         personal = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+
+        # Ships whose contents were pasted from the game since the last pull (1.7.4)
+        def is_ship_type(type_id):
+            return sde.get_type_category(type_id) == SHIP_CATEGORY
+        personal = with_manual_contents(personal, generated_dir, is_ship_type)
+        corporations = [dict(c, assets=with_manual_contents(c.get("assets", []), generated_dir, is_ship_type))
+                        for c in corporations]
         holder_assets: Dict[Holder, List[dict]] = {}
         for a in personal:
             if isinstance(a, dict) and a.get("character_id") is not None:
@@ -73,3 +85,15 @@ class TrackingContext:
             self._built[holder] = ({s.asset.item_id: s for s in hierarchy.build_ships()}, hierarchy.build_carried_ships())
         ships, carried = self._built[holder]
         return ships.get(sighting.item_id), carried, ships
+
+    def contents_of(self, sighting: Sighting) -> List[dict]:
+        """The items directly inside an item (a container), from its holder's own assets (1.7.4)."""
+        holder = (sighting.holder_kind, sighting.holder_id)
+        if holder not in self._inside:
+            raw = [dict(a) for a in self._holder_assets.get(holder, [])]
+            annotate_mutated(raw, self.generated_dir)
+            inside: Dict[int, List[dict]] = {}
+            for a in raw:
+                inside.setdefault(a.get("location_id"), []).append(a)
+            self._inside[holder] = inside
+        return list(self._inside[holder].get(sighting.item_id, []))

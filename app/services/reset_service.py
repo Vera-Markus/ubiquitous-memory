@@ -89,6 +89,8 @@ class ResetService:
             files += sorted(killmails.glob("*.json"))            # killmails (plan 30.1): pulled data too
         if (self.generated_dir / "all_assets.json").exists():
             files.append(self.generated_dir / "all_assets.json")
+        if (self.generated_dir / "manual_contents.json").exists():
+            files.append(self.generated_dir / "manual_contents.json")     # ship contents pasted from the game (1.7.4)
         return files
 
     def clear_assets(self, pull_state_service: Any = None) -> int:
@@ -148,17 +150,19 @@ class ResetService:
     # --- Clear Library -------------------------------------------------------------------------
 
     def clear_library(self, fittings: Any, roles: Any, doctrines: Any, registry: Any,
-                      ship_designations: Any = None) -> Tuple[int, int, int]:
+                      ship_designations: Any = None, container_designations: Any = None) -> Tuple[int, int, int]:
         """
         Deletes every fitting, role and doctrine (with their requirements and
         character assignments), the installed-package records, the remembered
-        export package names and the ships' designations (they point at
-        fittings).
+        export package names and the ships' and containers' designations (they
+        point at fittings).
         Asset data and logins stay. Returns the counts removed.
         """
         counts = (len(fittings.list_fittings()), len(roles.roles), len(doctrines.doctrines))
         if ship_designations is not None:
             ship_designations.clear()
+        if container_designations is not None:
+            container_designations.clear()
         doctrines.clear()
         roles.clear()
         fittings.clear()

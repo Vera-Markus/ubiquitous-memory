@@ -245,8 +245,8 @@ def pulled_item_ids(generated_dir: Path, corp_dir: Path) -> Set[int]:
 
 
 def refresh_from_pull(designations: ShipDesignations, generated_dir: Path, corp_dir: Path,
-                      log: Callable[[str], None], now: Optional[str] = None) -> None:
-    """Marks the ships this pull saw and removes records not seen for EXPIRY_DAYS (logged by name)."""
+                      log: Callable[[str], None], now: Optional[str] = None, noun: str = "ship") -> None:
+    """Marks the ships (or containers: noun) this pull saw and removes records not seen for EXPIRY_DAYS (logged by name)."""
     now = now or datetime.now(timezone.utc).isoformat(timespec="seconds")
     seen = pulled_item_ids(generated_dir, corp_dir)
     if not seen:
@@ -254,8 +254,8 @@ def refresh_from_pull(designations: ShipDesignations, generated_dir: Path, corp_
     expired = designations.refresh_seen(seen, now)
     away = sum(1 for i in designations.designations if i not in seen)
     if away:
-        log(f"[INFO] {away} ship(s) with an assigned fitting weren't in this pull; their fittings are kept "
+        log(f"[INFO] {away} {noun}(s) with an assigned fitting weren't in this pull; their fittings are kept "
             f"for {EXPIRY_DAYS} days in case they come back.")
     if expired:
         names = ", ".join(d.get("custom_name") or f"item {d['item_id']}" for d in expired)
-        log(f"[INFO] Forgot the fitting of {len(expired)} ship(s) not seen for {EXPIRY_DAYS} days: {names}")
+        log(f"[INFO] Forgot the fitting of {len(expired)} {noun}(s) not seen for {EXPIRY_DAYS} days: {names}")

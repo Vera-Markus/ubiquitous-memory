@@ -23,6 +23,7 @@ FITTING_ATTRIBUTE = {
     SlotCategory.CARGO: "cargo",
     SlotCategory.DRONES: "drones",
     SlotCategory.SUBSYSTEMS: "subsystems",
+    SlotCategory.SUBSYSTEM_BAY: "subsystem_bay",
     SlotCategory.FIGHTERS: "fighters",
     SlotCategory.FUEL_BAY: "fuel_bay",
     SlotCategory.FLEET_HANGAR: "fleet_hangar",
@@ -67,6 +68,7 @@ class HierarchyBuilder:
                 name=self.sde.get_type_name(type_id),
                 custom_name=item.get('custom_name'),
                 mutated_base=item.get('mutated_base'),
+                manual_at=item.get('manual_at'),
             )
             asset_map[item_id] = asset
         return asset_map

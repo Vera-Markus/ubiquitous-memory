@@ -19,6 +19,7 @@ class AssetPipelineService:
         # through it. Without one (tools, tests), a pull makes its own.
         self.auth_service = auth_service
         self.ship_designations = ship_designations     # the app's ShipDesignations: last seen, 30-day expiry
+        self.container_designations = None              # the same for containers (1.7.4)
         self._is_running = False
         self._start_lock = threading.Lock()     # the GUI button and the auto-pull timer can race
         self.last_result: Optional[SequenceResult] = None      # who was pulled, dropped, stopped, held
@@ -74,13 +75,26 @@ class AssetPipelineService:
             aggregate_assets("all_assets.json", log_callback)
 
             # Ships' assigned fittings: mark the ships this pull saw, forget any unseen for 30 days.
+            from app import paths
             if self.ship_designations is not None:
                 try:
-                    from app import paths
                     from app.loaders.ship_designations import refresh_from_pull
                     refresh_from_pull(self.ship_designations, paths.GENERATED_DIR, paths.CORP_DIR, log_callback)
+                    if self.container_designations is not None:
+                        refresh_from_pull(self.container_designations, paths.GENERATED_DIR, paths.CORP_DIR,
+                                          log_callback, noun="container")
                 except Exception as e:
                     log_callback(f"[WARNING] Couldn't update the ships' assigned fittings: {e}")
+            # Ship contents pasted from the game: this pull replaces those of the holders it pulled (1.7.4).
+            try:
+                from app.asset_handling.corp_pull import load_corporations
+                from app.loaders.manual_contents import ManualContents
+                replaced = ManualContents(paths.GENERATED_DIR / "manual_contents.json").refresh_after_pull(
+                    result.succeeded, load_corporations(paths.CORP_DIR))
+                if replaced:
+                    log_callback(f"[INFO] This pull replaced the pasted contents of {replaced} ship(s).")
+            except Exception as e:
+                log_callback(f"[WARNING] Couldn't clear the ship contents pasted from the game: {e}")
 
             if result.held or result.stopped:
                 log_callback("[WARNING] The asset pull didn't finish; the characters pulled so far are saved.")

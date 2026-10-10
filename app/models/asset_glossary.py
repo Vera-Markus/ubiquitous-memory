@@ -12,6 +12,7 @@ class SlotType(Enum):
     CARGO = "Cargo"
     DRONE_BAY = "DroneBay"
     SUBSYSTEM_SLOT = "SubSystemSlot"
+    SUBSYSTEM_BAY = "SubSystemBay"      # a T3 cruiser's spare subsystems (1.7.4)
     FIGHTER_BAY = "FighterBay"
     FUEL_BAY = "SpecializedFuelBay"
     FLEET_HANGAR = "FleetHangar"
@@ -28,6 +29,7 @@ class SlotCategory(Enum):
     CARGO = "cargo"
     DRONES = "drones"
     SUBSYSTEMS = "subsystems"
+    SUBSYSTEM_BAY = "subsystem_bay"
     # Bays from the bay registry; the values are the registry's bay keys.
     FIGHTERS = "fighters"
     FUEL_BAY = "fuel_bay"
@@ -72,6 +74,8 @@ def classify_location_flag(flag: Optional[str]) -> tuple[SlotType, SlotCategory]
         return SlotType.RIG_SLOT, SlotCategory.RIGS
     if flag.startswith("SubSystemSlot"):
         return SlotType.SUBSYSTEM_SLOT, SlotCategory.SUBSYSTEMS
+    if flag == "SubSystemBay":
+        return SlotType.SUBSYSTEM_BAY, SlotCategory.SUBSYSTEM_BAY
     if flag == "Cargo":
         return SlotType.CARGO, SlotCategory.CARGO
     if flag == "DroneBay":

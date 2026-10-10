@@ -95,6 +95,7 @@ class EVEFleetGUI:
         self._db_job_running = False    # a database check or download is in progress
         self._login_running = False     # Characters ▸ Add Character is waiting for the browser
         self._auto_pull_pending = False
+        self._pull_progress = None      # (characters worked through, total) while a pull runs
         self._status_checking = False
         # Tranquility's status, checked before anything calls Fenris Creations (ESI features plan, Phase 25)
         self.server_status = ServerStatus()
@@ -203,6 +204,9 @@ class EVEFleetGUI:
         # Each ship's fitting and owner (Ships tab): the audit follows assigned ships (UI thoughts 18.3)
         self.ship_designations = ShipDesignations(GENERATED_DIR / "ship_designations.json")
         self.asset_pipeline_service.ship_designations = self.ship_designations     # last seen, 30-day expiry
+        # Each container's fitting, owner and Home (Assets ▸ Containers, 1.7.4): kept the same way
+        self.container_designations = ShipDesignations(GENERATED_DIR / "container_designations.json")
+        self.asset_pipeline_service.container_designations = self.container_designations
 
         # Characters ▸ Remove Character: login, asset data and assignments
         self.character_removal_service = CharacterRemovalService(
@@ -543,9 +547,14 @@ class EVEFleetGUI:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(pady=10, fill=tk.BOTH, expand=True)
 
-        # Tranquility's status, in the empty space on the right of the tab row (plan 25.3)
-        self.status_icon = ServerStatusIcon(self.root, self.server_status)
-        self.status_icon.place(in_=self.notebook, relx=1.0, x=-6, y=1, anchor="ne")
+        # Tranquility's status, in the empty space on the right of the tab row (plan 25.3), with the
+        # Auto Pull countdown, or a running pull's progress, beside it (1.7.4)
+        tab_row_right = ttk.Frame(self.root)
+        tab_row_right.place(in_=self.notebook, relx=1.0, x=-6, y=1, anchor="ne")
+        self.status_icon = ServerStatusIcon(tab_row_right, self.server_status)
+        self.status_icon.pack(side=tk.RIGHT)
+        self.lbl_tab_row_pull = ttk.Label(tab_row_right, text="", style=ui_style.HINT_LABEL)
+        self.lbl_tab_row_pull.pack(side=tk.RIGHT, padx=(0, 12))
         
         # Tabs
         self.options_tab = ttk.Frame(self.notebook)
@@ -556,7 +565,7 @@ class EVEFleetGUI:
         
         # Add tabs to notebook. Audit comes first, so it's the tab the app opens on.
         self.notebook.add(self.audit_tab, text="Doctrines")
-        self.notebook.add(self.corp_tab, text="Ships")
+        self.notebook.add(self.corp_tab, text="Assets")
         self.notebook.add(self.library_tab, text="Library")
         self.notebook.add(self.fittings_tab, text="Fittings")
         self.notebook.add(self.options_tab, text="Options")
@@ -945,8 +954,30 @@ class EVEFleetGUI:
                 self.lbl_next_auto_pull.config(text="Next Auto Pull: Scheduling...", foreground=ui_style.INFO)
         else:
             self.lbl_next_auto_pull.config(text="Next Auto Pull: Disabled", foreground=ui_style.MUTED)
+        self.lbl_tab_row_pull.config(text=self._tab_row_pull_text(running))
 
         self.root.after(1000, self._update_cooldown_ui)
+
+    def _tab_row_pull_text(self, running: bool) -> str:
+        """Beside the Tranquility lamp: a running pull's characters, else the Auto Pull countdown (1.7.4)."""
+        progress = self._pull_progress
+        if running:
+            if progress is None:
+                return "Pulling…"
+            done, total = progress
+            return f"Pulling {done + 1} of {total}" if done < total else "Finishing pull…"
+        if not self.auto_pull_var.get():
+            return ""
+        next_time = self.pull_state_service.next_auto_pull()
+        remaining = (next_time - datetime.now()).total_seconds() if next_time else 0
+        if remaining <= 0:
+            return "Auto Pull soon"
+        mins, secs = divmod(int(remaining), 60)
+        return f"Auto Pull in {mins}:{secs:02d}"
+
+    def _set_pull_progress(self, done: int, total: int):
+        """The pull sequence's progress hook; read by the 1 s timer. Any thread."""
+        self._pull_progress = (done, total)
 
     def _check_auto_pull_schedule(self):
         """Starts the automatic pull when it's due: an hour after the last successful one, or a retry (plan 25.5)."""
@@ -1005,9 +1036,10 @@ class EVEFleetGUI:
         all (D11.2, Q25.1): the status line and Last Pull say how it went.
         """
         success = self.asset_pipeline_service.execute_full_pull(self._log, self._pull_hooks(manual))
-        self._set_pull_status("")
         if success is None:
             return None             # another pull was already running; the service logged it
+        self._pull_progress = None
+        self._set_pull_status("")
         result = self.asset_pipeline_service.last_result
         if success:
             self.pull_state_service.last_pull_time = datetime.now()
@@ -1078,7 +1110,7 @@ class EVEFleetGUI:
             return False
 
         return Hooks(manual=manual, ask_retry=ask_retry, esi_up=esi_up, page_has_error=page_has_error,
-                     notify=self._set_pull_status)
+                     notify=self._set_pull_status, progress=self._set_pull_progress)
 
     def _set_pull_status(self, text: str):
         """The pull panel's status line; anything but the countdown also goes to the log. Any thread."""
@@ -1402,12 +1434,13 @@ class EVEFleetGUI:
                                   len(self.doctrine_manager.doctrines))
         if not messagebox.askyesno(title,
                 f"Delete {fits} fitting(s), {roles} role(s) and {doctrines} doctrine(s), with every requirement "
-                "and character assignment, the ships' assigned fittings, the installed-package records and the "
+                "and character assignment, the ships' and containers' assigned fittings, the installed-package records and the "
                 "remembered export package names?\n\nAsset data and logins stay. This can't be undone."):
             return
         counts = self.reset_service.clear_library(self.fitting_manager, self.role_manager, self.doctrine_manager,
                                                   self.package_registry,
-                                                  ship_designations=self.ship_designations)
+                                                  ship_designations=self.ship_designations,
+                                                  container_designations=self.container_designations)
         self._log(f"[INFO] Cleared the library: {counts[0]} fitting(s), {counts[1]} role(s), {counts[2]} doctrine(s).")
         self._refresh_after_library_change()
         messagebox.showinfo(title, "The library was cleared.")

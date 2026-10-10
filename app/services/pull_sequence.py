@@ -72,6 +72,7 @@ class Hooks:
     esi_up: Callable[[], bool] = lambda: True                          # D11.15
     page_has_error: Callable[[], Optional[bool]] = lambda: None        # None: couldn't read it
     notify: Callable[[str], None] = lambda text: None                  # the status line
+    progress: Callable[[int, int], None] = lambda done, total: None    # characters worked through (1.7.4)
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     name: Callable[[str], str] = lambda char: char
 
@@ -91,6 +92,7 @@ class PullSequence:
         i = 0
         while i < len(queue):
             char = queue[i]
+            h.progress(i, len(queue))
             h.notify(f"Pulling {h.name(char)} ({i + 1} of {len(queue)})…")
             outcome = await self.pull_one(char)
             if outcome.ok:
@@ -129,6 +131,7 @@ class PullSequence:
                 result.held = True
                 break
             after_safe_mode = char      # carry on from the character that failed
+        h.progress(len(queue), len(queue))
         result.succeeded = done
         return result
 

@@ -10,8 +10,9 @@ tabs always agree. Two views:
 - Expected, what the fitting says: present (ok), present but elsewhere (moved, "from
   cargo"), missing (missing).
 
-Charges loaded in modules count as cargo, as they do in the audit. Each line is
-(text, tag); the tab colours the tags from the theme.
+Charges loaded in modules count as cargo, as they do in the audit, but Current lists them
+under their modules, marked "loaded" (1.7.4). Each line is (text, tag); the tab colours the
+tags from the theme.
 """
 from collections import Counter, defaultdict
 from typing import Dict, List, Tuple
@@ -31,25 +32,36 @@ def where(location: str) -> str:
     return SLOT_LABELS.get(location) or SPACE_LABELS.get(location) or location
 
 
-def _lines(location: str, name: str, quantity: int, tag: str, note: str = "") -> List[Line]:
-    """A module per line in the slots, "Name x5" elsewhere (as EFT writes them)."""
+def _lines(location: str, name: str, quantity: int, tag: str, note: str = "", loaded: bool = False) -> List[Line]:
+    """A module per line in the slots, "Name x5" elsewhere (as EFT writes them). loaded: a charge in
+    modules, "Name x100 (loaded)"."""
     if quantity <= 0:
         return []
+    note = " · ".join(n for n in ("loaded" if loaded else "", note) if n)
     suffix = f"  ({note})" if note else ""
     if location in SLOT_LOCATIONS:
         return [(name + suffix, tag)] * quantity
     return [(f"{name} x{quantity}{suffix}", tag)]
 
 
+def shown_in(item: EftItem) -> str:
+    """The section an item is listed in: a loaded charge's modules', else its own location."""
+    return item.loaded or item.location
+
+
 def _merged(items: List[EftItem]) -> List[EftItem]:
-    """One entry per type and location (stacks, and charges loaded in several modules), in EFT order."""
+    """
+    One entry per type and location (stacks, and charges loaded in several modules), in EFT order.
+    Loaded charges come after the modules of their section, and before the cargo, so they count first.
+    """
     merged: Dict[tuple, EftItem] = {}
     for i in items:
-        key = (i.location, i.type_id)
+        key = (i.location, i.type_id, i.loaded)
         previous = merged.get(key)
-        merged[key] = EftItem(i.location, i.type_id, i.key, i.name, i.quantity + (previous.quantity if previous else 0))
-    return sorted(merged.values(), key=lambda i: (ORDER.index(i.location) if i.location in ORDER else 99,
-                                                  i.name.casefold()))
+        merged[key] = EftItem(i.location, i.type_id, i.key, i.name, i.quantity + (previous.quantity if previous else 0),
+                              i.loaded)
+    return sorted(merged.values(), key=lambda i: (ORDER.index(shown_in(i)) if shown_in(i) in ORDER else 99,
+                                                  bool(i.loaded), i.name.casefold()))
 
 
 def _layout(header: str, sections: Dict[str, List[Line]]) -> List[Line]:
@@ -79,10 +91,13 @@ def current_lines(result: ShipRequirementResult, hull: str, fit_name: str) -> Li
 
     sections: Dict[str, List[Line]] = defaultdict(list)
     for item in _merged(result.contents):
-        out = sections[item.location]
+        out = sections[shown_in(item)]
+
+        def lines(quantity, tag, note=""):
+            return _lines(item.location, item.name, quantity, tag, note, loaded=bool(item.loaded))
         here = min(item.quantity, expected_left[(item.location, item.key)])
         expected_left[(item.location, item.key)] -= here
-        out += _lines(item.location, item.name, here, OK)
+        out += lines(here, OK)
         rest = item.quantity - here
         for entry in moves_out[(item.location, item.key)]:
             take = min(rest, entry[1])
@@ -91,20 +106,20 @@ def current_lines(result: ShipRequirementResult, hull: str, fit_name: str) -> Li
             entry[1] -= take
             rest -= take
             if entry[0].to_location == REMOVE:
-                out += _lines(item.location, item.name, take, REMOVE_TAG, "remove")
+                out += lines(take, REMOVE_TAG, "remove")
             else:
-                out += _lines(item.location, item.name, take, MOVED, f"→ {where(entry[0].to_location)}")
+                out += lines(take, MOVED, f"→ {where(entry[0].to_location)}")
         for entry in substitute_for[item.key]:
             take = min(rest, entry[1])
             if take > 0:
                 entry[1] -= take
                 rest -= take
-                out += _lines(item.location, item.name, take, OK, f"for {entry[0]}")
+                out += lines(take, OK, f"for {entry[0]}")
         take = min(rest, unexpected_left[(item.location, item.type_id)])
         unexpected_left[(item.location, item.type_id)] -= take
         rest -= take
-        out += _lines(item.location, item.name, take, REMOVE_TAG, "not in the fit")
-        out += _lines(item.location, item.name, rest, EXTRA, "more than the fit needs")
+        out += lines(take, REMOVE_TAG, "not in the fit")
+        out += lines(rest, EXTRA, "more than the fit needs")
     custom = result.custom_name if result.custom_name and result.custom_name != hull else fit_name
     return _layout(f"[{hull}, {custom}]", sections)
 
@@ -115,8 +130,9 @@ def fitted_lines(items, hull: str, custom_name: str = "") -> List[Line]:
     green. items are the audit's AboardItems (location, type_id, name, quantity).
     """
     sections: Dict[str, List[Line]] = defaultdict(list)
-    for item in _merged([EftItem(i.location, i.type_id, i.type_id, i.name, i.quantity) for i in items]):
-        sections[item.location] += _lines(item.location, item.name, item.quantity, OK)
+    for item in _merged([EftItem(i.location, i.type_id, i.type_id, i.name, i.quantity, getattr(i, "loaded", ""))
+                         for i in items]):
+        sections[shown_in(item)] += _lines(item.location, item.name, item.quantity, OK, loaded=bool(item.loaded))
     return _layout(f"[{hull}, {custom_name or hull}]", sections)
 
 

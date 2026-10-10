@@ -34,6 +34,7 @@ class AboardItem:
     name: str
     quantity: int
     mutated_base: Optional[int] = None      # set for a mutated item whose base is known
+    loaded: str = ""        # a charge loaded in modules: their slot location; its location is "cargo" (1.7.4)
 
 
 def items_aboard(ship: ShipAsset, rules: SdeRules, split_tubes: bool = False) -> List[AboardItem]:
@@ -45,18 +46,22 @@ def items_aboard(ship: ShipAsset, rules: SdeRules, split_tubes: bool = False) ->
     fitting = ship.fitting
     found: List[AboardItem] = []
 
-    def add(location: str, asset: Asset, quantity: int = None) -> None:
+    def add(location: str, asset: Asset, quantity: int = None, loaded: str = "") -> None:
         if rules.category(asset.type_id) == CATEGORY_SHIP:
             return
         found.append(AboardItem(location, asset.type_id, asset.name, asset.quantity if quantity is None else quantity,
-                                asset.mutated_base))
+                                asset.mutated_base, loaded))
 
     for location, assets in (("high", fitting.high), ("mid", fitting.med), ("low", fitting.low),
                              ("rigs", fitting.rigs), ("subsystem", fitting.subsystems)):
         for asset in assets:
             # Ammo, crystals and scripts loaded in a module share its slot flag. They're
-            # consumables aboard, so they count with the cargo, not as fitted items.
-            add("cargo" if rules.category(asset.type_id) == CATEGORY_CHARGE else location, asset)
+            # consumables aboard, so they count with the cargo, not as fitted items; the EFT
+            # view still shows them with their modules (1.7.4).
+            if rules.category(asset.type_id) == CATEGORY_CHARGE:
+                add("cargo", asset, loaded=location)
+            else:
+                add(location, asset)
     for asset in fitting.drones:
         add("drones", asset)
     for asset in fitting.fighters:
@@ -69,9 +74,26 @@ def items_aboard(ship: ShipAsset, rules: SdeRules, split_tubes: bool = False) ->
         add("cargo", asset)
     for asset in fitting.fleet_hangar:
         add("cargo", asset)                # cargo and fleet hangar are one pooled space (D2)
+    for asset in fitting.subsystem_bay:
+        add("cargo", asset)                # spare subsystems: EFT lists them in the cargo (1.7.4)
     for asset in fitting.fuel_bay:
         add("fuel_bay", asset)
     return found
+
+
+def items_in_container(assets: List[dict], rules: SdeRules, name_of) -> List[AboardItem]:
+    """
+    A container's items (raw asset dicts), all one cargo pool (1.7.4): packaged or not, a type
+    is one stack. name_of: type ID -> name.
+    """
+    found: Dict[tuple, int] = {}
+    for a in assets:
+        if rules.category(a["type_id"]) == CATEGORY_SHIP:
+            continue
+        key = (a["type_id"], a.get("mutated_base"))
+        found[key] = found.get(key, 0) + int(a.get("quantity") or 1)
+    return [AboardItem("cargo", type_id, name_of(type_id), quantity, base)
+            for (type_id, base), quantity in sorted(found.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0))]
 
 
 @dataclass

@@ -14,6 +14,7 @@ class Asset:
     custom_name: Optional[str] = None
     fitting: Optional['Fitting'] = None
     mutated_base: Optional[int] = None      # a mutated item's base module, once known (plan 12.2)
+    manual_at: Optional[str] = None         # a ship whose contents were pasted from the game: when (1.7.4)
 
 @dataclass
 class Fitting:
@@ -24,6 +25,7 @@ class Fitting:
     cargo: List[Asset] = field(default_factory=list)
     drones: List[Asset] = field(default_factory=list)
     subsystems: List[Asset] = field(default_factory=list)
+    subsystem_bay: List[Asset] = field(default_factory=list)        # spare subsystems (1.7.4)
     contents: List[Asset] = field(default_factory=list)
     # Bays from the bay registry (app/models/bay_registry.py). Filled from step 1.2.
     fighters: List[Asset] = field(default_factory=list)            # fighter bay + fighter tubes

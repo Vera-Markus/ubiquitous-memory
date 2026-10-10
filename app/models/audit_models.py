@@ -73,6 +73,7 @@ class EftItem:
     key: int                # the equivalence key the audit counted it by
     name: str
     quantity: int
+    loaded: str = ""        # a charge loaded in modules: their slot location ("high"); it counts as cargo (1.7.4)
 
 
 @dataclass
@@ -116,6 +117,8 @@ class ShipRequirementResult:
     # Losses (ESI features plan 30.3): a missing ship a killmail matched: {"state": "lost" or "possibly",
     # "date", "killmail_id", "insurance"?}. Set by the Doctrines tab after the audit.
     loss: Optional[Dict[str, Any]] = None
+    # Contents pasted from the game (1.7.4): when. Unverified until the next pull replaces them.
+    unverified: Optional[str] = None
     # What the audit compared, for the EFT view (plan 19.2): aboard, expected, and what aboard
     # the fitting doesn't call for at all.
     contents: List[EftItem] = field(default_factory=list)

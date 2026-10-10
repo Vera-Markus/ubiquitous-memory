@@ -5,12 +5,26 @@ A Windows desktop tool for fleet organisers in EVE Online. Build a library of fi
 - **Characters:** log in one or more characters with EVE's official login (EVE SSO) and pull their assets, clones and implants, and their corporation's hangars when they're a Director.
 - **Fittings:** paste fits in EFT format, then rename, edit or delete them. Capitals get extra requirements: fuel, fleet hangar stock, carried ships, fighters pre-loaded in tubes, the escape frigate. A Capsule fitting with implants is an implant set.
 - **Library:** roles (fittings needed at a location) and doctrines (a set of roles), with characters assigned to roles.
-- **Ships:** every ship a character or corporation holds, by place and hangar. Give each ship the fitting it's meant to fly and an owner; see how it compares in an audit view and an EFT view.
+- **Assets:** every ship and container a character or corporation holds, by place and hangar. Give each the fitting it's meant to carry, an owner and a Home; see how it compares in an audit view and an EFT view.
 - **Doctrines:** every assigned pilot's ships, checked module by module against their role. A shopping list is built from what's missing, using what's already in the pilot's hangars first.
 - **Doctrine packages:** export a doctrine library to a file and import it on another machine, so a whole corp can share one.
 - **ESI features** (each can be turned off in Options): skill checks, hub prices, alliance contracts for missing ships, opening the market or a route in your game client, syncing fittings with the game, and noticing lost ships.
 
 **Help → User Guide** (F1) explains the workflows and how the tabs connect.
+
+## What's new in 1.7.4-rc7.4
+
+- **The Ships tab is now Assets,** and opens straight away: a spinner shows while the ships are read and audited.
+- **Containers:** a new tab beside Ships and Implants. Give a container a fitting, an owner and a Home, like a ship. A container is just cargo: everything the fitting lists should be inside, and each type counts as one stack, packaged or not.
+- **Update Contents from Game…:** right-click a ship and paste its contents as copied in the game, to check a refit without waiting for the next pull. The audit uses them, marked unverified, until the next pull replaces them.
+- **Loaded charges:**
+  - In the **EFT** view, ammo and scripts loaded in modules are listed under those modules. They still count with the cargo against the fitting's numbers.
+  - **Fittings with loaded charges** ("Launcher, Missile" lines) now keep the module, and the charge is expected in the cargo. Such fittings saved before 1.7.4 lost those modules: paste them again.
+- **T3 cruisers:** spare subsystems in the subsystem hold count with the cargo.
+- **Auto Pull:** the time to the next pull shows beside **Tranquility**, top right; during a pull it counts the characters.
+- **The ship audit and EFT views** scroll sideways when a line is long.
+
+No new permissions: install over 1.7.3, or use **Help ▸ Check for Updates…**.
 
 ## What's new in 1.7.3-rc7.3
 

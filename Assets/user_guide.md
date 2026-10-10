@@ -7,7 +7,7 @@ The tool is built from a few pieces that point at each other:
 - **Fittings**: what a ship should carry ([Fittings tab](#the-fittings-tab)).
 - **Roles**: a set of requirements, each one a fitting at a place ([Library tab](#the-library-tab)).
 - **Doctrines**: a set of roles, with characters assigned to them.
-- **Ships**: your real ships, each assigned a fitting and an owner ([Ships tab](#the-ships-tab)).
+- **Assets**: your real ships, each assigned a fitting and an owner ([Assets tab](#the-assets-tab)).
 - **Audits**: the doctrine checked against the ships ([Doctrines tab](#the-doctrines-tab)).
 
 Skim [Getting started](#getting-started) first, then use the [workflows](#workflows) as recipes.
@@ -15,10 +15,10 @@ Skim [Getting started](#getting-started) first, then use the [workflows](#workfl
 ## Getting started
 
 1. **Add your characters.** Use **Characters ▸ Add Character**. Your browser opens EVE's login page; log in and accept. Repeat for each character. They appear in **Options ▸ Connected Characters**, in alphabetical order.
-2. **Pull your assets.** In **Options**, press **Pull All**. It reads every character's assets, clones and implants, and the hangars of any corporation one of your characters is a Director of ([corporations](#corporations)). After a pull, Pull All rests for 15 minutes. Tick **Enable Auto Pull** to pull once an hour while the tool is open.
+2. **Pull your assets.** In **Options**, press **Pull All**. It reads every character's assets, clones and implants, and the hangars of any corporation one of your characters is a Director of ([corporations](#corporations)). After a pull, Pull All rests for 15 minutes. Tick **Enable Auto Pull** to pull once an hour while the tool is open. The time to the next one shows beside **Tranquility**, top right; during any pull it counts the characters instead (**Pulling 3 of 8**).
 3. **Add fittings.** In **Fittings**, press **New Fitting** and paste a fit from the game (Fitting window ▸ Copy to Clipboard). See [The Fittings tab](#the-fittings-tab).
 4. **Build a doctrine.** In **Library**, create roles and a doctrine, give each role its requirements, and assign characters. See [Build a doctrine](#build-a-doctrine).
-5. **Assign your ships.** In **Ships**, give each of your ships the fitting it's meant to fly. The audit only checks assigned ships. See [Assign your ships](#assign-your-ships).
+5. **Assign your ships.** In **Assets**, give each of your ships the fitting it's meant to fly. The audit only checks assigned ships. See [Assign your ships](#assign-your-ships).
 6. **Audit.** In **Doctrines**, pick the doctrine and press **Run Doctrine Audit**. See [Read an audit](#read-an-audit).
 
 The first time it starts, the tool downloads Fenris Creations' game data (about 100 MB) and builds its database. When an update needs new data, it offers to rebuild it; **Tools ▸ Check for DB Update** checks for a newer Fenris Creations release.
@@ -29,9 +29,9 @@ The first time it starts, the tool downloads Fenris Creations' game data (about 
 
 Pick a doctrine and press **Run Doctrine Audit**. The tree on the left shows the doctrine, then each role, each character assigned to it, each of their requirements, and the ships checked for each one. The **Shopping List** on the right collects what's missing ([Shop for what's missing](#shop-for-whats-missing)).
 
-What it checks comes from three places: the doctrine and roles in the [Library](#the-library-tab), the fittings in [Fittings](#the-fittings-tab), and which ship is assigned which fitting in [Ships](#the-ships-tab).
+What it checks comes from three places: the doctrine and roles in the [Library](#the-library-tab), the fittings in [Fittings](#the-fittings-tab), and which ship is assigned which fitting in [Assets](#the-assets-tab).
 
-### The Ships tab
+### The Assets tab
 
 Every ship one holder has. Pick the holder at the top: one of your characters, or a corporation ([corporations](#corporations)). The list is grouped by place, then hangar (your personal hangar, a corporation division by name, deliveries, asset safety), then ship. A ship carried inside another, in its ship maintenance bay or fleet hangar, sits under its carrier. **Ship** shows the hull; the name you gave it in game is in **Name**, beside it.
 
@@ -40,10 +40,13 @@ Every ship one holder has. Pick the holder at the top: one of your characters, o
 - **Columns:** drag a column's edge to resize it; the widths are remembered for every character and corporation. The last column, **Owner**, takes whatever room is left.
 - **Owner** says whose requirements the ship serves ([owners](#owners)).
 - **Assigned only** hides ships with no fitting.
+- The tab opens at once; a spinner shows while the ships are read and audited.
 - On the right, the selected ship's **Audit** and **EFT** tabs ([check one ship](#check-one-ship)).
 - **The ship a character is sitting in** is listed too, though EVE's asset list leaves it out: a Titan that never docks shows in its system, marked **(in space)**. A character added before this needs adding again (**Characters ▸ Add Character**) for it.
 
 The **Implants** tab, beside **Ships**, shows the chosen character's clones: the active clone and each jump clone with where it is, its implants by slot, and which of your library's implant sets it carries ([implant sets](#implant-sets)). It also gives the home station and the last clone jump.
+
+The **Containers** tab lists the holder's containers (cargo, secure, audit log and freight containers) the same way, by place and hangar. Give containers a fitting, an **Owner** and a **Home** just as you do ships; any fitting can go in any container. A container is just cargo: everything the fitting lists (modules, charges, drones; not the hull) should be inside it, and each type counts as one stack, packaged or not. Its **Audit** says what's missing or extra; **EFT** lists what's inside.
 
 ### The Library tab
 
@@ -69,6 +72,7 @@ Your saved fittings, grouped by ship class and hull, in a list down the left. Be
 - **Search**: type in the box above the list to show only fittings whose ship class, hull or name contains the text. **Clear** (or Esc) shows them all again.
 - **New Fitting**: paste EFT text from the game. Tick **Shared Doctrine Fitting** for a fitting that's part of a doctrine you'll share ([shared and local](#shared-and-local)).
 - **Edit**, then **Save**: change a fitting's EFT text. Anything the EVE database doesn't know is listed and left out.
+- **Loaded charges** ("Cruise Missile Launcher II, Scourge Fury Cruise Missile") keep the module, and the charge is expected in the cargo: at least one per module, or the cargo section's number if that's more. A fitting saved before 1.7.4 with loaded charges lost those modules: paste it again.
 - If a fit you import or save is identical to one already saved (same hull, modules, drones, fighters and cargo, whatever its name), the tool says which and asks before saving another copy.
 - **Requirements you haven't saved:** picking another fitting, or pressing **Edit** or **New Fitting**, asks first. **Yes** saves them, **No** discards them, **Cancel** stays.
 - Right-click a fitting to **Rename…**, **Delete…** or **Copy-Multibuy** (a whole ship's worth, for the game's Multibuy).
@@ -130,7 +134,7 @@ The doctrine can now be [audited](#read-an-audit), once the ships are [assigned]
 
 The audit checks only ships that have a fitting assigned, so it never guesses which of two Devoters is your doctrine one.
 
-1. Open [Ships](#the-ships-tab) and pick the character.
+1. Open [Assets](#the-assets-tab) and pick the character.
 2. Select a ship (or several of one hull), choose the fitting, press **Assign Fitting**. The ship's audit appears on the right.
 3. Its owner is set to whoever holds it ([owners](#owners)), and its **Home** to the system it's in.
 
@@ -182,15 +186,18 @@ Two buttons beside it each open a preview; nothing changes until you press **App
 
 ### Check one ship
 
-In [Ships](#the-ships-tab), select one ship. On the right:
+In [Assets](#the-assets-tab), select one ship. On the right:
 
 - **Audit**: the same check as in an audit, for this ship alone.
 - **EFT**: the ship in EFT layout. The switch at the top changes the view:
   - **Current**, what's on the ship: green in place, orange in the wrong place, struck through to take off.
   - **Expected**, what the fitting says: green aboard, orange aboard but elsewhere, red missing.
   - **A ship with no fitting assigned:** **Current** shows it as it's fitted now, all in green; **Expected** has nothing to show until it has a fitting.
+  - **Charges loaded in modules** are listed under those modules, marked **(loaded)**. They count with the cargo against the fitting's numbers: a fitting wanting 500 missiles, with 100 loaded and 200 in the cargo, is 200 short.
 
-Both views come from the same check as the Audit tab, so they always agree.
+Both views come from the same check as the Audit tab, so they always agree. A T3 cruiser's spare subsystems in its subsystem hold count with its cargo too.
+
+**Update Contents from Game…** (right-click a ship): to check a refit without waiting for the next pull, copy the ship's contents in the game (select every item, Ctrl+C) and paste them in. The audit uses them straight away, marked **⏳ unverified**, until the next pull of that character (or corporation) replaces them. Charges loaded in modules count as cargo; ships carried aboard stay as pulled. **Discard Pasted Contents** goes back to the last pull.
 
 Right-click the **Audit** view:
 
@@ -210,7 +217,7 @@ On a soft requirement everything missing is a warning.
 
 **Right-click** the line or its requirement ▸ **Copy Skill Plan**. It copies the missing levels, one per line, each skill's prerequisites first. Paste it into the game's skill planner with **import from clipboard**.
 
-**In the Ships tab,** right-click any ship ▸ **Can <pilot> Fly This?**. It checks the ship as it is, fitted modules and everything aboard, against its owner's skills (or the skills of the character holding it). It answers **Yes**, or lists what's missing and offers to copy the skill plan. A corporation's ship needs a character as its owner first.
+**In the Assets tab,** right-click any ship ▸ **Can <pilot> Fly This?**. It checks the ship as it is, fitted modules and everything aboard, against its owner's skills (or the skills of the character holding it). It answers **Yes**, or lists what's missing and offers to copy the skill plan. A corporation's ship needs a character as its owner first.
 
 ### Shop for what's missing
 
@@ -276,7 +283,7 @@ With **Options ▸ ESI Features ▸ Losses** on, **Pull All** also reads each ch
 A loss is matched to a ship of the same hull that has an assigned fitting, was seen in an earlier pull and is gone now. The ship can belong to any of your linked characters, since one may have flown another's, or, with **Corporation losses** on, to the corporation. The fit isn't compared: modules get swapped and ammo gets used. <Personal> ships and ships whose fitting no requirement uses are never matched.
 
 The app never decides on its own. After the pull it asks about each ship that could be it:
-- **Yes:** it's **💥 Lost <date>: replace** in the audit, and greyed out under **Lost ships** in the Ships tab.
+- **Yes:** it's **💥 Lost <date>: replace** in the audit, and greyed out under **Lost ships** in the Assets tab.
 - **No:** it isn't, and the next one (if any) is asked about.
 - **Cancel:** decide later. Each reads **Possibly lost** until you right-click the right one ▸ **This One Was Lost**.
 
@@ -340,11 +347,11 @@ Packages never carry logins, assets, clones, ship assignments or corporation dat
 
 ### Corporations
 
-A character who is a **Director** of their corporation can read its hangars. **Pull All** then pulls them too, with division names, and the corporation appears as a holder in [Ships](#the-ships-tab), acting like a character. If several of your characters are Directors of the same corporation, one pull covers it. A character added before this feature needs adding again ([Add Character](#getting-started)) to grant the corporation permissions.
+A character who is a **Director** of their corporation can read its hangars. **Pull All** then pulls them too, with division names, and the corporation appears as a holder in [Assets](#the-assets-tab), acting like a character. If several of your characters are Directors of the same corporation, one pull covers it. A character added before this feature needs adding again ([Add Character](#getting-started)) to grant the corporation permissions.
 
 ### Owners
 
-Each assigned ship has an **owner**: a character or a corporation. It's whoever held the ship when it was first assigned; change it with **Owner** in [Ships](#the-ships-tab). The list offers every linked character's corporation, even one with no linked Director (its hangars aren't pulled, but a ship can still be its).
+Each assigned ship has an **owner**: a character or a corporation. It's whoever held the ship when it was first assigned; change it with **Owner** in [Assets](#the-assets-tab). The list offers every linked character's corporation, even one with no linked Director (its hangars aren't pulled, but a ship can still be its).
 
 - A ship serves only its owner's requirements. A corporation's ship sitting in your hangar doesn't count for you.
 - Your ship counts for you wherever it is; in a corporation hangar it's **Away**, unless that's where the requirement is.

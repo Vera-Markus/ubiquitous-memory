@@ -19,6 +19,7 @@ ICONS = {RequirementStatus.PASS: "✅", RequirementStatus.WARN: "⚠", Requireme
          RequirementStatus.NOT_CHECKED: "⚪"}         # a hull with no fitting assigned (A4)
 ESCAPE_BAY_KEY = "escape_bay"
 NOT_AUDITED = "📋"
+UNVERIFIED = "⏳"                   # a ship's contents pasted from the game, until the next pull (1.7.4)
 MISSING_ITEMS = "missing_items"     # tree values tag for the node "Add Missing Items to Shopping List" reads
 
 SLOT_LABELS = {"subsystem": "subsystems", "high": "high slots", "mid": "mid slots", "low": "low slots", "rigs": "rigs"}
@@ -215,7 +216,11 @@ def ship_node(ship: ShipRequirementResult, packed: Dict[int, CarriedShip], where
     label = f"{ICONS[ship.status]} {ship.custom_name or ship.ship_name}" + (f" - {fit_name}" if fit_name else "")
     if ship.placement in ("AWAY", "DEPLOYED"):
         where = ""                          # the placement says where it is
-    return Node(label + where + placement_text(ship), children, data=ship, tone=tone)
+    if ship.unverified:
+        children.insert(0, Node(f"{UNVERIFIED} Unverified: contents pasted from the game {ship.unverified[:16].replace('T', ' ')} "
+                                "UTC, until the next pull"))
+    return Node(label + where + placement_text(ship) + (f" · {UNVERIFIED} unverified" if ship.unverified else ""),
+                children, data=ship, tone=tone)
 
 
 # --- one requirement -------------------------------------------------------------------------

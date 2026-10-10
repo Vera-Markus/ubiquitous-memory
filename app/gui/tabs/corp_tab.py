@@ -9,6 +9,7 @@ through contracts. The data is read again each time the tab is opened (after Pul
 for example).
 """
 import logging
+import threading
 import tkinter as tk
 from datetime import datetime, timezone
 from tkinter import ttk
@@ -20,14 +21,17 @@ from app.gui import style as ui_style
 from app.gui import eft_presenter as eft
 from app.gui.audit_presenter import ICONS, Node, ship_node
 from app.gui.dialogs.onboard_ships_dialog import OnboardShipsDialog
-from app.gui.status_icons import StatusIcons
+from app.gui.dialogs.paste_contents_dialog import TITLE as PASTE_TITLE, PasteContentsDialog
+from app.gui.spinner import Spinner
+from app.gui.status_icons import SIZE, StatusIcons
 from app.gui.type_ahead import TypeAhead
+from app.loaders.manual_contents import ManualContents, parse_inventory_paste
 from app.loaders.ship_designations import ANYWHERE, home_system, is_anywhere
 from app.gui.toggle_switch import ToggleSwitch
 from app.models.audit_models import RequirementStatus
 from app.asset_handling.skill_pull import load_levels
 from app.services import esi_features
-from app.services.fleet_ships import bay_of, hangar_of, owner_choices, ship_rows
+from app.services.fleet_ships import bay_of, container_items, container_rows, hangar_of, owner_choices, ship_rows
 from app.services.shopping_list_service import ShoppingListService, items_text
 from app.models.audit_models import ItemShortfall
 from app.services.audit.inventory import items_aboard
@@ -42,6 +46,11 @@ EXPECTED_SETTING = "ships_eft_expected"
 EFT_LEGEND = {False: "Green: in place · orange: in the wrong place · struck through: take it off",
               True: "Green: aboard · orange: aboard, in the wrong place · red: missing"}
 AS_FITTED_LEGEND = "No fitting assigned: the ship as it's fitted now"
+AS_PACKED_LEGEND = "No fitting assigned: what's in the container now"
+CONTAINER_LEGEND = {False: "Green: in the container · struck through: not in the fit",
+                    True: "Green: in the container · red: missing"}
+VIEWS = ("ships", "implants", "containers")     # the sub-tabs, in order
+POLL_MS = 50                # how often a background load is checked on
 SHIPS_SHARE = 0.75          # the ship list's share of the tab's width, at first
 SHIP_COLUMNS = ("name", "fitting", "home", "status", "owner")
 # Column widths the user dragged (1.7.2 plan, 32.3): one set for every holder, kept across restarts.
@@ -52,6 +61,8 @@ PERSONAL = "<Personal>"     # first in the Fitting list: the audit never sees th
 ANYWHERE_LABEL = "Anywhere"
 COPY_MISSING = "Copy Missing Items"
 ONBOARD_THESE = "Onboard These Ships…"
+PASTE_CONTENTS = "Update Contents from Game…"
+DISCARD_PASTED = "Discard Pasted Contents"
 STATUS_TEXT = {RequirementStatus.PASS: "Ready", RequirementStatus.WARN: "Ready, needs attention",
                RequirementStatus.FAIL: "Not ready"}
 
@@ -94,6 +105,11 @@ def home_text(row, system_name) -> str:
 
 
 def status_text(row) -> str:
+    text = _status_text(row)
+    return f"{text} · unverified" if getattr(row, "unverified", None) else text
+
+
+def _status_text(row) -> str:
     if row.personal:
         return "Personal"
     if row.fit_uid is None:
@@ -117,6 +133,9 @@ class CorpTab:
         self._system_names = {}         # ID -> name
         self._context = None
         self.onboard_dialog = None      # Onboard These Ships (32.1), while open
+        # Loading in the background (1.7.4): the tab shows at once, with a spinner over the list.
+        self.loading = False
+        self._load_generation = 0       # a newer load (or a direct one) makes an older one's result stale
         self._setup()
 
     def _log(self, message: str):
@@ -127,16 +146,17 @@ class CorpTab:
     def _setup(self):
         top = ttk.Frame(self.frame)
         top.pack(fill=tk.X, padx=10, pady=10)
-        ttk.Label(top, text="Ships of:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(top, text="Assets of:").pack(side=tk.LEFT, padx=5)
         self.holder_combo = ttk.Combobox(top, state="readonly", width=40)
         self.holder_combo.pack(side=tk.LEFT, padx=5)
-        self.holder_combo.bind("<<ComboboxSelected>>", lambda e: self._load_view())
+        self.holder_combo.bind("<<ComboboxSelected>>", lambda e: self._load_view(background=True))
         ttk.Label(top, text="Each linked character's corporation is listed; its hangars show once a linked Director pulls them.",
                   style=ui_style.HINT_LABEL).pack(side=tk.LEFT, padx=15)
 
-        # Ships, or the holder's clones and implants: two tabs, as By Doctrine and By System are.
+        # Ships, the holder's clones and implants, or containers (1.7.4): tabs, as By Doctrine and By System are.
+        # Containers share the ship list and its Fitting panel: a container is given a fitting, an owner and a Home.
         self.view_tabs = ttk.Notebook(self.frame)
-        for text in ("Ships", "Implants"):
+        for text in ("Ships", "Implants", "Containers"):
             self.view_tabs.add(ttk.Frame(self.view_tabs, height=1), text=text)
         self.view_tabs.pack(fill=tk.X, padx=10)
         self.view_tabs.bind("<<NotebookTabChanged>>", lambda e: self._on_view_changed())
@@ -150,6 +170,7 @@ class CorpTab:
         paned.bind("<Configure>", lambda e: self._place_split(paned, e.width))
 
         left = ttk.LabelFrame(paned, text="Ships", padding=(5, 5))
+        self._list_frame = left
         paned.add(left)
         # Hide ships with no fitting (UI thoughts 9, plan 17.5); remembered between sessions.
         switch_row = ttk.Frame(left)
@@ -190,6 +211,7 @@ class CorpTab:
         self.ship_tree.bind("<Button-3>", self._on_ship_right_click)
         self.ship_tree.status_icons = StatusIcons(self.ship_tree)
         self.lbl_ships_empty = ttk.Label(self.ship_tree, text="", style=ui_style.ON_LIST_LABEL)
+        self.spinner = Spinner(tree_frame)
 
         right = ttk.Frame(paned)
         paned.add(right)
@@ -229,8 +251,19 @@ class CorpTab:
         self.ship_view.pack(fill=tk.BOTH, expand=True, padx=10)
         audit = ttk.Frame(self.ship_view, padding=(5, 5))
         self.ship_view.add(audit, text="Audit")
+        # Long lines scroll sideways rather than being cut off (1.7.4).
+        audit.rowconfigure(0, weight=1)
+        audit.columnconfigure(0, weight=1)
         self.audit_tree = ttk.Treeview(audit, show="tree")
-        self.audit_tree.pack(fill=tk.BOTH, expand=True)
+        audit_yscroll = ttk.Scrollbar(audit, orient=tk.VERTICAL, command=self.audit_tree.yview)
+        audit_xscroll = ttk.Scrollbar(audit, orient=tk.HORIZONTAL, command=self.audit_tree.xview)
+        self.audit_tree.configure(yscrollcommand=audit_yscroll.set, xscrollcommand=audit_xscroll.set)
+        self.audit_tree.grid(row=0, column=0, sticky="nsew")
+        audit_yscroll.grid(row=0, column=1, sticky="ns")
+        audit_xscroll.grid(row=1, column=0, sticky="ew")
+        self.audit_tree.column("#0", stretch=False)
+        self._audit_text_width = 0      # what the widest audit line needs, in pixels
+        self.audit_tree.bind("<Configure>", lambda e: self._size_audit_column(), add="+")
         self.audit_tree.status_icons = StatusIcons(self.audit_tree)
         # Right-click the audit: copy what the ship lacks, or show a missing item in the game's market.
         self._audit_data = {}           # audit tree item -> the ItemShortfall behind a missing item line
@@ -251,9 +284,13 @@ class CorpTab:
         self.eft_text = tk.Text(text_frame, wrap=tk.NONE, height=10, borderwidth=0, padx=8, pady=6,
                                 font=(ui_style.FONT_FAMILY, 10))
         eft_scroll = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=self.eft_text.yview)
-        self.eft_text.configure(yscrollcommand=eft_scroll.set, state=tk.DISABLED)
-        self.eft_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        eft_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        eft_xscroll = ttk.Scrollbar(text_frame, orient=tk.HORIZONTAL, command=self.eft_text.xview)
+        self.eft_text.configure(yscrollcommand=eft_scroll.set, xscrollcommand=eft_xscroll.set, state=tk.DISABLED)
+        text_frame.rowconfigure(0, weight=1)
+        text_frame.columnconfigure(0, weight=1)
+        self.eft_text.grid(row=0, column=0, sticky="nsew")
+        eft_scroll.grid(row=0, column=1, sticky="ns")
+        eft_xscroll.grid(row=1, column=0, sticky="ew")
         self._eft_row = None
         self.eft_lines = []
 
@@ -283,7 +320,15 @@ class CorpTab:
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def view(self) -> str:
-        return "implants" if self.view_tabs.index(self.view_tabs.select()) == 1 else "ships"
+        return VIEWS[self.view_tabs.index(self.view_tabs.select())]
+
+    def containers(self) -> bool:
+        """The Containers view: the ship list shows containers instead (1.7.4)."""
+        return self.view() == "containers"
+
+    def _designations(self):
+        """Where the listed items' fittings, owners and Homes are kept: ships' or containers'."""
+        return self.app.container_designations if self.containers() else self.app.ship_designations
 
     def _on_view_changed(self):
         if self.view() == "implants":
@@ -292,11 +337,17 @@ class CorpTab:
         else:
             self.implants_frame.pack_forget()
             self._paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        self._load_view()
+            noun = "Container" if self.containers() else "Ship"
+            self._list_frame.config(text=noun + "s")
+            self.ship_tree.heading("#0", text=noun)
+            self.ship_tree.selection_set(())
+        self._load_view(background=True)
 
-    def _load_view(self):
+    def _load_view(self, background: bool = False):
         if self.view() == "implants":
             self._load_implants()
+        elif background:
+            self._load_in_background()
         else:
             self._load_ships()
 
@@ -364,21 +415,30 @@ class CorpTab:
 
     def _on_tab_changed(self, event=None):
         if self.app.notebook.select() == str(self.frame):
-            self.refresh()
+            self.refresh(background=True)
 
     # --- loading ----------------------------------------------------------------------------
 
-    def refresh(self):
-        """Holders, the context (assets and corporation pulls) and the chosen holder's ships."""
+    def refresh(self, background: bool = False, keep=()):
+        """
+        Holders, the context (assets and corporation pulls) and the chosen holder's ships.
+        background: read the assets and audit the ships on a worker thread, with a spinner (1.7.4).
+        """
         names = {str(k): v for k, v in (getattr(self.app.auth_service, "index", {}) or {}).items()}
         corporations = load_corporations(paths.CORP_DIR)
         generated = self.app.audit_collection_service.generated_dir
-        self.app.ship_designations.prune(f["fit_uid"] for f in self.app.fitting_manager.list_fittings())
-        try:
-            self._context = TrackingContext.load(generated, corporations, self.app.evedb_loader, None, names)
-        except Exception as e:
-            self._context = None
-            self._log(f"[WARNING] The Ships tab couldn't read the asset data: {e}")
+        uids = [f["fit_uid"] for f in self.app.fitting_manager.list_fittings()]
+        self.app.ship_designations.prune(uids)
+        self.app.container_designations.prune(uids)
+
+        def load_context():
+            return TrackingContext.load(generated, corporations, self.app.evedb_loader, None, names)
+        if not background:
+            try:
+                self._context = load_context()
+            except Exception as e:
+                self._context = None
+                self._log(f"[WARNING] The Assets tab couldn't read the asset data: {e}")
         if not self._systems:
             self._load_systems()
         # Every linked character's corporation is listed (and an Owner choice) even with no Director
@@ -389,19 +449,90 @@ class CorpTab:
         current = self.holder_combo.get()
         self.holder_combo["values"] = labels
         self.holder_combo.set(current if current in labels else (labels[0] if labels else ""))
-        self._load_view()
+        if background and self.view() != "implants":
+            self._load_in_background(load_context, keep)
+        else:
+            self._load_view()
 
-    def _load_ships(self, keep=()):
-        """Fills the ship tree for the chosen holder; keep: item IDs to select again."""
+    def _rows_for(self, context, holder, containers):
+        """The holder's ships, or containers, audited. Any thread."""
+        if holder is None or context is None:
+            return []
+        names = {(h["kind"], h["id"]): h["name"] for h in self._owners.values()}
+        listing, designations = ((container_rows, self.app.container_designations) if containers
+                                 else (ship_rows, self.app.ship_designations))
+        return listing(context, holder, designations, self.app.fitting_manager, self.app.audit_engine, names)
+
+    def _load_in_background(self, load_context=None, keep=()):
+        """
+        Reads the assets (load_context, when given) and audits the chosen holder's ships on a worker
+        thread; the list is emptied and a spinner shown until they're ready (1.7.4).
+        """
+        self._load_generation += 1
+        generation = self._load_generation
+        holder_label, containers = self.holder_combo.get(), self.containers()
+        holder = self._holders.get(holder_label)
+        context = self._context
+        self.ship_tree.delete(*self.ship_tree.get_children())
+        self._rows = {}
+        self.lbl_ships_empty.place_forget()
+        self._on_selection()
+        self.loading = True
+        self.spinner.show(over=self.ship_tree, text="Loading containers…" if containers else "Loading ships…")
+
+        done = []           # the worker's result; never touches Tk itself
+
+        def work():
+            error, rows, loaded = None, None, context
+            try:
+                if load_context is not None:
+                    loaded = load_context()
+                rows = self._rows_for(loaded, holder, containers)
+            except Exception as e:
+                error = e
+                logger.exception("The Assets tab couldn't load")
+            done.append((loaded, rows, error))
+
+        def poll():
+            if generation != self._load_generation:
+                return      # stale: a newer load or a direct fill took over
+            if not done:
+                self.frame.after(POLL_MS, poll)
+                return
+            loaded, rows, error = done[0]
+            self._loaded(generation, holder_label, containers, loaded, rows, error, load_context is not None, keep)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.frame.after(POLL_MS, poll)
+
+    def _loaded(self, generation, holder_label, containers, context, rows, error, new_context, keep=()):
+        if generation != self._load_generation:
+            return          # a newer load has started, or the list was filled directly since
+        self.loading = False
+        self.spinner.hide()
+        if new_context:
+            self._context = context if error is None else None
+        if error is not None:
+            self._log(f"[WARNING] The Assets tab couldn't read the asset data: {error}")
+            rows = None
+        if holder_label != self.holder_combo.get() or containers != self.containers():
+            rows = None     # the choice changed while loading: list what's chosen now
+        self._load_ships(keep=keep, rows=rows)
+
+    def _load_ships(self, keep=(), rows=None):
+        """Fills the ship tree for the chosen holder; keep: item IDs to select again. rows: already audited."""
+        if rows is None and self.loading:
+            self._load_generation += 1      # filled directly: a background load's result is stale now
+            self.loading = False
+            self.spinner.hide()
         self.ship_tree.delete(*self.ship_tree.get_children())
         self._rows = {}
         holder = self._holders.get(self.holder_combo.get())
-        rows = []
-        if holder is not None and self._context is not None:
-            names = {(h["kind"], h["id"]): h["name"] for h in self._owners.values()}
-            rows = ship_rows(self._context, holder, self.app.ship_designations, self.app.fitting_manager,
-                             self.app.audit_engine, names)
-        rows += self._lost_rows(holder)
+        if rows is None:
+            rows = self._rows_for(self._context, holder, self.containers())
+        rows = list(rows)
+        if not self.containers():
+            rows += self._lost_rows(holder)
         total = len(rows)
         if self.assigned_only.get():
             rows = [r for r in rows if r.fit_uid is not None]
@@ -449,9 +580,10 @@ class CorpTab:
             if holder is None:
                 text = "No characters yet: add one from Characters ▸ Add Character."
             elif total:
-                text = f"None of the {total} ships has a fitting assigned: turn off Assigned only to see them."
+                noun = "containers" if self.containers() else "ships"
+                text = f"None of the {total} {noun} has a fitting assigned: turn off Assigned only to see them."
             else:
-                text = "No ships."
+                text = "No containers." if self.containers() else "No ships."
             self.lbl_ships_empty.config(text=text)
             self.lbl_ships_empty.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         reselect = [item for item, row in self._rows.items() if row.item_id in set(keep)]
@@ -519,7 +651,9 @@ class CorpTab:
         self.audit_tree.delete(*self.audit_tree.get_children())
         self._audit_data = {}
         self._fit_choices = {}
-        if not rows:
+        if self.containers():
+            self._container_choices(rows)
+        elif not rows:
             self.lbl_selection.config(text="Select ships on the left.")
         elif len(hulls) > 1:
             self.lbl_selection.config(text=f"{len(rows)} ships of different hulls selected: "
@@ -532,7 +666,7 @@ class CorpTab:
                                if f.get("hull_type_id") == rows[0].type_id),
                               key=lambda f: (f.get("fit_name") or "").casefold())
             self._fit_choices = {f"{f.get('fit_name')} ({f['fit_uid']})": f["fit_uid"] for f in fittings}
-        if rows:
+        if rows and not self.containers():
             self._fit_choices = {PERSONAL: None, **self._fit_choices}       # for any hulls (S5)
         labels = list(self._fit_choices)
         self.fit_combo["values"] = labels
@@ -544,7 +678,7 @@ class CorpTab:
                             if uid is not None and assigned == {uid}), None)
         fittings_offered = [label for label in labels if label != PERSONAL]
         self.fit_combo.set(current or (fittings_offered[0] if fittings_offered else ""))
-        if rows and len(hulls) == 1 and not fittings_offered:
+        if rows and len(hulls) == 1 and not fittings_offered and not self.containers():
             self.lbl_selection.config(text=self.lbl_selection["text"] + f"\nNo {rows[0].hull} fitting in the "
                                                                         "library yet: import one in Fittings.")
         self.btn_assign.config(state=tk.NORMAL if labels else tk.DISABLED)
@@ -563,7 +697,26 @@ class CorpTab:
         self.owner_combo.config(state="readonly" if assigned else "disabled")
         if len(rows) == 1:
             self._show_audit(rows[0])
+        self._audit_text_width = ui_style.tree_text_width(self.audit_tree, image=SIZE + 4)
+        self._size_audit_column()
         self._show_eft(rows[0] if len(rows) == 1 else None)
+
+    def _size_audit_column(self):
+        """The audit's one column: as wide as its widest line, or the view if that's wider (1.7.4)."""
+        self.audit_tree.column("#0", width=max(self._audit_text_width, self.audit_tree.winfo_width()))
+
+    def _container_choices(self, rows):
+        """Containers take any fitting (1.7.4): what it lists is expected inside, as cargo."""
+        if not rows:
+            self.lbl_selection.config(text="Select containers on the left.")
+            return
+        self.lbl_selection.config(text=f"{len(rows)} containers selected" if len(rows) > 1 else ship_label(rows[0])[2:])
+        fittings = sorted(self.app.fitting_manager.list_fittings(),
+                          key=lambda f: ((f.get("fit_name") or "").casefold(), (f.get("hull") or "").casefold()))
+        self._fit_choices = {f"{f.get('fit_name')} · {f.get('hull')} ({f['fit_uid']})": f["fit_uid"] for f in fittings}
+        if not fittings:
+            self.lbl_selection.config(text=self.lbl_selection["text"] + "\nNo fittings in the library yet: "
+                                                                        "import one in Fittings.")
 
     # --- Can <pilot> Fly This? (ESI features plan 26.6) -----------------------------------------------
 
@@ -629,8 +782,15 @@ class CorpTab:
         menu = self.ship_menu
         if menu.index(tk.END) is not None:
             menu.delete(0, tk.END)
+        if self.containers():
+            return []
         if self._onboard_rows():
             menu.add_command(label=ONBOARD_THESE, command=self._handle_onboard_these)
+            menu.add_separator()
+        if not row.loss and len(self._selected_rows()) <= 1:
+            menu.add_command(label=PASTE_CONTENTS, command=lambda: self._handle_paste_contents(row))
+            if row.unverified:
+                menu.add_command(label=DISCARD_PASTED, command=lambda: self._handle_discard_pasted(row))
             menu.add_separator()
         pilot = self._pilot_of(row)
         if esi_features.enabled("skills") and pilot is not None:
@@ -650,6 +810,48 @@ class CorpTab:
         end = menu.index(tk.END)
         return [] if end is None else [menu.entrycget(i, "label") for i in range(end + 1)
                                        if menu.type(i) != "separator"]
+
+    # --- Update Contents from Game (1.7.4) -----------------------------------------------------------
+
+    def _manual_contents(self) -> ManualContents:
+        """Read afresh each time: Pull All drops the pastes it replaces on its own thread."""
+        return ManualContents(self.app.audit_collection_service.generated_dir / "manual_contents.json")
+
+    def _handle_paste_contents(self, row):
+        name = ship_label(row)[2:] + (f' "{row.custom_name}"' if row.custom_name else "")
+        text = PasteContentsDialog(self.frame.winfo_toplevel(), name).ask()
+        if text is not None:
+            self.apply_pasted_contents(row, text)
+
+    def apply_pasted_contents(self, row, text: str) -> bool:
+        """The pasted contents become the ship's until the next pull (marked unverified). Returns whether kept."""
+        pasted = parse_inventory_paste(text, self.app.evedb_loader)
+        if not pasted.items:
+            unknown = f"\n\nNot recognised: {', '.join(dict.fromkeys(pasted.unknown_names))[:400]}" \
+                if pasted.unknown_names else ""
+            messagebox.showwarning(PASTE_TITLE, "Nothing in the paste is an item the tool knows. Copy the ship's "
+                                                "contents in the game (Name, Group, Location, Quantity)." + unknown)
+            return False
+        notes = []
+        if pasted.unknown_names:
+            notes.append("Not recognised, left out: " + ", ".join(dict.fromkeys(pasted.unknown_names)))
+        if pasted.unknown_places:
+            notes.append("Places the tool doesn't know, counted as cargo: " + ", ".join(dict.fromkeys(pasted.unknown_places)))
+        if notes and not messagebox.askyesno(PASTE_TITLE, "\n\n".join(notes) + "\n\nUse the rest?"):
+            return False
+        holder = self._holders.get(self.holder_combo.get()) or {}
+        when = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self._manual_contents().set(row.item_id, holder, pasted.items, when)
+        skipped = f"; ships aboard left as pulled ({', '.join(pasted.ships_skipped)})" if pasted.ships_skipped else ""
+        self._log(f"[INFO] {row.custom_name or row.hull}: contents pasted from the game ({len(pasted.items)} item(s)), "
+                  f"unverified until the next pull{skipped}.")
+        self.refresh(background=True, keep=[row.item_id])
+        return True
+
+    def _handle_discard_pasted(self, row):
+        if self._manual_contents().remove([row.item_id]):
+            self._log(f"[INFO] {row.custom_name or row.hull}: the pasted contents were discarded; back to the last pull.")
+        self.refresh(background=True, keep=[row.item_id])
 
     # --- Onboard These Ships (1.7.2 plan, 32.1) ------------------------------------------------------
 
@@ -822,12 +1024,12 @@ class CorpTab:
         """The selected ship in EFT layout, Current or Expected, from its audit result (plan 19.2)."""
         self._eft_row = row
         expected = self.eft_switch.get()
-        self.lbl_eft_legend.config(text=EFT_LEGEND[expected])
+        self.lbl_eft_legend.config(text=(CONTAINER_LEGEND if self.containers() else EFT_LEGEND)[expected])
         if row is None:
             lines = [("Select one ship on the left.", eft.EXTRA)]
         elif row.fit_uid is None and not expected and not row.loss:
             lines = self._as_fitted(row)       # 32.4: no fitting, so Current shows the ship as it stands
-            self.lbl_eft_legend.config(text=AS_FITTED_LEGEND)
+            self.lbl_eft_legend.config(text=AS_PACKED_LEGEND if self.containers() else AS_FITTED_LEGEND)
         elif row.result is None:
             lines = [("No fitting assigned." if row.fit_uid is None else (row.note or "Not audited."), eft.EXTRA)]
         elif expected:
@@ -850,6 +1052,12 @@ class CorpTab:
 
     def _as_fitted(self, row):
         """EFT lines for a ship with no fitting: what's aboard now, all green (1.7.2 plan, 32.4)."""
+        if self.containers():
+            sighting = self._context.universe.find(row.item_id) if self._context is not None else None
+            if sighting is None:
+                return [("The container isn't in the last pull.", eft.EXTRA)]
+            return eft.fitted_lines(container_items(self._context, sighting, self.app.audit_engine.rules),
+                                    row.hull, row.custom_name)
         ship = self._ship_asset(row)
         if ship is None:
             return [("No fitting assigned, and the ship isn't in the last pull.", eft.EXTRA)]
@@ -870,17 +1078,18 @@ class CorpTab:
         when = datetime.now(timezone.utc).isoformat(timespec="seconds")
         if rows and choice == PERSONAL:
             for row in rows:
-                self.app.ship_designations.mark_personal(row.item_id, row.type_id, holder, row.custom_name, when)
+                self._designations().mark_personal(row.item_id, row.type_id, holder, row.custom_name, when)
             self._log(f"[INFO] Marked {len(rows)} ship(s) {PERSONAL}: the audit won't look at them.")
             self._load_ships(keep=[r.item_id for r in rows])
             return
         if not rows or fit_uid is None:
-            messagebox.showinfo("Assign Fitting", "Select ships of one hull, and a fitting for them.")
+            messagebox.showinfo("Assign Fitting", "Select containers, and a fitting for them." if self.containers()
+                                else "Select ships of one hull, and a fitting for them.")
             return
         for row in rows:
-            self.app.ship_designations.assign(row.item_id, row.type_id, fit_uid, holder, row.custom_name, when,
+            self._designations().assign(row.item_id, row.type_id, fit_uid, holder, row.custom_name, when,
                                               system_id=row.system_id)
-        self._log(f"[INFO] Assigned {self.fit_combo.get()} to {len(rows)} ship(s).")
+        self._log(f"[INFO] Assigned {self.fit_combo.get()} to {len(rows)} {self._noun()}(s).")
         self._load_ships(keep=[r.item_id for r in rows])
 
     def _handle_owner(self):
@@ -889,9 +1098,9 @@ class CorpTab:
         rows = [r for r in self._selected_rows() if r.fit_uid is not None or r.personal]
         if owner is None or not rows:
             return
-        changed = self.app.ship_designations.set_owner((r.item_id for r in rows), owner)
+        changed = self._designations().set_owner((r.item_id for r in rows), owner)
         if changed:
-            self._log(f"[INFO] {changed} ship(s) now belong to {owner['name']}.")
+            self._log(f"[INFO] {changed} {self._noun()}(s) now belong to {owner['name']}.")
         self._load_ships(keep=[r.item_id for r in self._selected_rows()])
 
     def _load_systems(self):
@@ -899,7 +1108,7 @@ class CorpTab:
         try:
             systems = self.app.evedb_loader.get_all_solar_systems()
         except Exception as e:
-            self._log(f"[WARNING] The Ships tab couldn't list the solar systems: {e}")
+            self._log(f"[WARNING] The Assets tab couldn't list the solar systems: {e}")
             return
         self._systems = {s["solarSystemName"]: s["solarSystemID"] for s in systems}
         self._system_names = {i: name for name, i in self._systems.items()}
@@ -919,15 +1128,18 @@ class CorpTab:
             home = {"system_id": self._systems[name]}
         else:
             return
-        changed = self.app.ship_designations.set_home((r.item_id for r in rows), home)
+        changed = self._designations().set_home((r.item_id for r in rows), home)
         if changed:
-            self._log(f"[INFO] {changed} ship(s) now have their Home in {name}.")
+            self._log(f"[INFO] {changed} {self._noun()}(s) now have their Home in {name}.")
         self._load_ships(keep=[r.item_id for r in rows])
+
+    def _noun(self) -> str:
+        return "container" if self.containers() else "ship"
 
     def _handle_clear(self):
         rows = [r for r in self._selected_rows() if r.fit_uid is not None or r.personal]
         if not rows:
             return
-        self.app.ship_designations.unassign(r.item_id for r in rows)
-        self._log(f"[INFO] Cleared the fitting of {len(rows)} ship(s).")
+        self._designations().unassign(r.item_id for r in rows)
+        self._log(f"[INFO] Cleared the fitting of {len(rows)} {self._noun()}(s).")
         self._load_ships(keep=[r.item_id for r in rows])
